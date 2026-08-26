@@ -1,0 +1,11 @@
+{
+  "enabled": true,
+  "checkOnStartup": false,
+  "repoUrl": "https://github.com/kadwaolsztyn-afk/EuroKonwerter",
+  "releaseTag": "Baza",
+  "targetAssetFileName": "data-catalog.json",
+  "lastChecked": null,
+  "lastSynced": null,
+  "lastVersion": null,
+  "lastTotalRows": null
+}
