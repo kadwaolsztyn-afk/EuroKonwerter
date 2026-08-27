@@ -925,19 +925,6 @@ export const InteractiveDataGrid: React.FC<InteractiveDataGridProps> = ({
       if (selectedBrand === 'all' || b.toLowerCase() === selectedBrand.toLowerCase()) {
         if (m && m !== '-' && !/^\d+[\.\)]?$/.test(m)) {
           set.add(m);
-          // Also if model contains slashes, add clean individual variants
-          if (m.includes('/')) {
-            const bracketMatch = m.match(/\(([^)]+)\)/);
-            const gen = bracketMatch ? ` (${bracketMatch[1]})` : '';
-            const rawClean = m.replace(/\([^)]+\)/g, '').trim();
-            const subModels = rawClean.split('/').map(s => s.trim()).filter(Boolean);
-            subModels.forEach(sub => {
-              if (sub.length >= 2) {
-                set.add(gen ? `${sub}${gen}` : sub);
-                set.add(sub);
-              }
-            });
-          }
         }
       }
     });
