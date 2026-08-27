@@ -1,11 +1,11 @@
 import { ImportedDocument } from '../types';
 
 export const INITIAL_COMPREHENSIVE_CATALOG: ImportedDocument = {
-  ...{
   "id": "doc-auto-katalog-pl-v2",
   "name": "Baza Pojazdów USA/EU (35 Marek - 264 Modele)",
   "fileType": "sample",
   "sizeFormatted": "380 KB",
+  "importedAt": "2026-08-21T18:37:46.342Z",
   "totalRows": 261,
   "brandsCount": 35,
   "headers": [
@@ -6644,8 +6644,6 @@ export const INITIAL_COMPREHENSIVE_CATALOG: ImportedDocument = {
     }
   ],
   "rawHtml": ""
-},
-  importedAt: new Date()
-};
+} as unknown as ImportedDocument;
 
 export const INITIAL_35_BRANDS_DOCUMENT: ImportedDocument = INITIAL_COMPREHENSIVE_CATALOG;

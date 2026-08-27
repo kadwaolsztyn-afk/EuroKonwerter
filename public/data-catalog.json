@@ -3,6 +3,7 @@
   "name": "Baza Pojazdów USA/EU (35 Marek - 264 Modele)",
   "fileType": "sample",
   "sizeFormatted": "380 KB",
+  "importedAt": "2026-08-21T18:37:46.342Z",
   "totalRows": 261,
   "brandsCount": 35,
   "headers": [
@@ -6640,6 +6641,5 @@
       "height": 100
     }
   ],
-  "rawHtml": "",
-  "importedAt": "2026-08-25T12:20:55.039Z"
+  "rawHtml": ""
 }
