@@ -1305,8 +1305,8 @@ export const INITIAL_COMPREHENSIVE_CATALOG: ImportedDocument = {
       "id": 54,
       "lp": "54",
       "brand": "Audi",
-      "model": "Q5",
-      "factoryCode": "8R / FY",
+      "model": "Q5 / SQ5",
+      "factoryCode": "8R / FY (w tym SQ5 2021+)",
       "years": "2012-2024",
       "staticSignal": "Statyczny LED",
       "priceClientStatic": "1 350 zł",
@@ -1322,8 +1322,8 @@ export const INITIAL_COMPREHENSIVE_CATALOG: ImportedDocument = {
       "coding": "ODIS w cenie",
       "lampCount": "4 szt.",
       "imageUrl": "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='100' viewBox='0 0 200 100'><rect width='200' height='100' rx='8' fill='%230f172a'/><path d='M20 50 Q60 20 180 35 L160 75 Q70 70 20 50 Z' fill='%231e293b' stroke='%2338bdf8' stroke-width='2'/><circle cx='60' cy='48' r='14' fill='%230284c7'/><circle cx='60' cy='48' r='8' fill='%23e0f2fe'/><path d='M90 42 L150 46 L145 58 L85 54 Z' fill='%23fbbf24'/><text x='100' y='88' font-family='Arial' font-size='10' fill='%2394a3b8' text-anchor='middle'>AUDI MATRIX LED</text></svg>",
-      "imageAlt": "Audi Q5 Lampa LED / Dynamic",
-      "customNotes": "8R / FY • Kierunkowskazy: Statyczny LED / Dynamiczny Pływający LED • Kodowanie: ODIS w cenie"
+      "imageAlt": "Audi Q5 / SQ5 Lampa LED / Dynamic",
+      "customNotes": "8R / FY (w tym SQ5 2021+) • Kierunkowskazy: Statyczny LED / Dynamiczny Pływający LED • Kodowanie: ODIS w cenie"
     },
     {
       "id": 55,

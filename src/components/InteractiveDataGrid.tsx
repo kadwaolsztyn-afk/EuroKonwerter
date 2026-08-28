@@ -1014,14 +1014,20 @@ export const InteractiveDataGrid: React.FC<InteractiveDataGridProps> = ({
         return false;
       }
 
-      // 4. Szukaj frazy
+      // 4. Szukaj frazy (inteligentne dopasowanie wielosłowowe)
       if (q) {
-        const matches =
-          (row.brand || '').toLowerCase().includes(q) ||
-          (row.model || '').toLowerCase().includes(q) ||
-          (row.factoryCode || '').toLowerCase().includes(q) ||
-          (row.years || '').toLowerCase().includes(q);
-        if (!matches) return false;
+        const tokens = q.split(/\s+/).filter(Boolean);
+        const searchableText = `${row.lp || ''} ${row.brand || ''} ${row.model || ''} ${row.factoryCode || ''} ${row.years || ''} ${row.staticSignal || ''} ${row.dynamicSignal || ''} ${row.installation || ''} ${row.coding || ''} ${row.customNotes || ''}`.toLowerCase();
+        
+        const allTokensMatch = tokens.every((token) => {
+          if (searchableText.includes(token)) return true;
+          if (/^\d{4}$/.test(token)) {
+            return matchesYearFilter(row.years, token);
+          }
+          return false;
+        });
+
+        if (!allTokensMatch) return false;
       }
 
       return true;
