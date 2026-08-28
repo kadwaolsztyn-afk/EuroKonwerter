@@ -55,6 +55,7 @@ export interface ImportedDocument {
   fileType: 'html' | 'excel' | 'csv' | 'sample' | 'json';
   sizeFormatted: string;
   importedAt: Date;
+  version?: string;
   rawHtml?: string;
   rows: DocumentRow[];
   headers: string[];

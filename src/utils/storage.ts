@@ -1,28 +1,47 @@
 import { ImportedDocument, DocumentRow } from '../types';
-import { INITIAL_35_BRANDS_DOCUMENT } from '../data/initialCatalog';
+import { INITIAL_35_BRANDS_DOCUMENT, CURRENT_DATABASE_VERSION } from '../data/initialCatalog';
 
 const DB_NAME = 'CarLampsCatalogDB';
-const DB_VERSION = 1;
+const DB_VERSION = 2; // Incremented to migrate older schemas automatically
 const STORE_NAME = 'catalog_data';
 const DOCUMENT_KEY = 'active_document';
 
 const MASTER_CACHE_KEY = 'carlamps_last_active_database';
 const SNAPSHOT_KEY = 'carlamps_full_active_snapshot';
+const VERSION_KEY = 'carlamps_catalog_version';
+
+/**
+ * Returns true if a cached document is outdated or from an old version
+ */
+function isDocumentOutdated(doc: any): boolean {
+  if (!doc || !Array.isArray(doc.rows) || doc.rows.length === 0) return true;
+  // If version doesn't match current unified version
+  if (doc.version !== CURRENT_DATABASE_VERSION) {
+    // If it's a default/sample catalog (not a custom user document with custom name)
+    if (!doc.name || doc.name.includes('Baza') || doc.name.includes('35 Marek') || doc.rows.length < 266) {
+      return true;
+    }
+  }
+  return false;
+}
 
 /**
  * Returns the last known database synchronously from localStorage for instant 0ms offline startup
  */
 export function getSynchronousInitialDocument(): ImportedDocument {
   try {
-    const raw = localStorage.getItem(MASTER_CACHE_KEY) || localStorage.getItem(SNAPSHOT_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (parsed && Array.isArray(parsed.rows) && parsed.rows.length > 0) {
-        if (parsed.importedAt && typeof parsed.importedAt === 'string') {
-          parsed.importedAt = new Date(parsed.importedAt);
+    const cachedVersion = localStorage.getItem(VERSION_KEY);
+    if (cachedVersion === CURRENT_DATABASE_VERSION) {
+      const raw = localStorage.getItem(MASTER_CACHE_KEY) || localStorage.getItem(SNAPSHOT_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && Array.isArray(parsed.rows) && parsed.rows.length >= 266 && !isDocumentOutdated(parsed)) {
+          if (parsed.importedAt && typeof parsed.importedAt === 'string') {
+            parsed.importedAt = new Date(parsed.importedAt);
+          }
+          parsed.rows = sanitizeDocumentRows(parsed.rows);
+          return parsed;
         }
-        parsed.rows = sanitizeDocumentRows(parsed.rows);
-        return parsed;
       }
     }
   } catch (e) {
@@ -118,13 +137,18 @@ export async function saveDocumentToStorage(document: ImportedDocument): Promise
     return;
   }
 
+  const docWithVersion: ImportedDocument = {
+    ...document,
+    version: document.version || CURRENT_DATABASE_VERSION,
+  };
+
   // 1. Primary storage: IndexedDB (supports unlimited rows, full base64 images, specs)
   try {
     const db = await openDB();
     await new Promise<void>((resolve, reject) => {
       const transaction = db.transaction([STORE_NAME], 'readwrite');
       const store = transaction.objectStore(STORE_NAME);
-      const request = store.put(document, DOCUMENT_KEY);
+      const request = store.put(docWithVersion, DOCUMENT_KEY);
 
       request.onsuccess = () => resolve();
       request.onerror = () => reject(request.error);
@@ -135,16 +159,17 @@ export async function saveDocumentToStorage(document: ImportedDocument): Promise
 
   // 2. Dual redundancy: localStorage for 0ms instant synchronous load and full offline persistence
   try {
-    const serialized = JSON.stringify(document);
+    const serialized = JSON.stringify(docWithVersion);
     localStorage.setItem(MASTER_CACHE_KEY, serialized);
     localStorage.setItem(SNAPSHOT_KEY, serialized);
+    localStorage.setItem(VERSION_KEY, CURRENT_DATABASE_VERSION);
     localStorage.setItem('carlamps_last_sync_timestamp', new Date().toISOString());
   } catch (_) {
     // If quota exceeded due to huge raw images, strip heavy inline data for the localStorage mirror
     try {
       const lightDoc: ImportedDocument = {
-        ...document,
-        rows: document.rows.map((r) => ({
+        ...docWithVersion,
+        rows: docWithVersion.rows.map((r) => ({
           ...r,
           imageUrl: (r.imageUrl && r.imageUrl.length > 30000) ? undefined : r.imageUrl,
         })),
@@ -153,11 +178,12 @@ export async function saveDocumentToStorage(document: ImportedDocument): Promise
       const lightSerialized = JSON.stringify(lightDoc);
       localStorage.setItem(MASTER_CACHE_KEY, lightSerialized);
       localStorage.setItem(SNAPSHOT_KEY, lightSerialized);
+      localStorage.setItem(VERSION_KEY, CURRENT_DATABASE_VERSION);
     } catch (_) {}
   }
 
   // 3. Sync to server master storage if available
-  saveMasterCatalogToServer(document).catch((e) => {
+  saveMasterCatalogToServer(docWithVersion).catch((e) => {
     console.warn('Background server sync notice:', e);
   });
 }
@@ -401,9 +427,10 @@ export function sanitizeDocumentRows(rows: DocumentRow[]): DocumentRow[] {
 /**
  * Loads the saved document state:
  * 1. Checks local IndexedDB (contains exact full document with photos & rows)
- * 2. Fallbacks to localStorage cache for offline continuity
- * 3. Fallbacks to server catalog if online
- * 4. Only returns default 35 brands if storage was completely empty on fresh install
+ * 2. Checks if local state is from an outdated version, and auto-upgrades if needed
+ * 3. Fallbacks to localStorage cache for offline continuity
+ * 4. Fallbacks to server catalog if online
+ * 5. Returns unified 35 brands / 266 models catalog
  */
 export async function loadDocumentFromStorage(): Promise<ImportedDocument | null> {
   // 1. Check local IndexedDB first
@@ -433,18 +460,32 @@ export async function loadDocumentFromStorage(): Promise<ImportedDocument | null
     });
 
     if (localDoc && localDoc.rows && localDoc.rows.length > 0) {
-      return localDoc;
+      if (!isDocumentOutdated(localDoc)) {
+        return localDoc;
+      }
+      console.log('Migrating local storage from outdated version to unified version:', CURRENT_DATABASE_VERSION);
     }
   } catch (err) {
     console.warn('Notice: IndexedDB read fallback to localStorage:', err);
   }
 
-  // 2. Check local synchronous storage fallback
+  // 2. Check server master catalog first when online to guarantee cross-device parity
+  try {
+    const serverDoc = await fetchMasterCatalogFromServer();
+    if (serverDoc && serverDoc.rows && serverDoc.rows.length >= 266) {
+      await saveDocumentToStorage(serverDoc);
+      return serverDoc;
+    }
+  } catch (err) {
+    console.warn('Server catalog fetch error or offline:', err);
+  }
+
+  // 3. Check local synchronous storage fallback if not outdated
   try {
     const raw = localStorage.getItem(MASTER_CACHE_KEY) || localStorage.getItem(SNAPSHOT_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
-      if (parsed && Array.isArray(parsed.rows) && parsed.rows.length > 0) {
+      if (parsed && Array.isArray(parsed.rows) && parsed.rows.length > 0 && !isDocumentOutdated(parsed)) {
         if (parsed.importedAt && typeof parsed.importedAt === 'string') {
           parsed.importedAt = new Date(parsed.importedAt);
         }
@@ -456,19 +497,11 @@ export async function loadDocumentFromStorage(): Promise<ImportedDocument | null
     console.warn('Notice: localStorage read fallback to server/defaults:', err);
   }
 
-  // 3. Check server master catalog if available
+  // 4. Default fallback: Save and return the master 266 models catalog
   try {
-    const serverDoc = await fetchMasterCatalogFromServer();
-    if (serverDoc && serverDoc.rows && serverDoc.rows.length > 0) {
-      // Save it locally for future offline availability
-      await saveDocumentToStorage(serverDoc);
-      return serverDoc;
-    }
-  } catch (err) {
-    console.warn('Server catalog fetch error or offline:', err);
-  }
+    await saveDocumentToStorage(INITIAL_35_BRANDS_DOCUMENT);
+  } catch (_) {}
 
-  // 4. Default fallback on very first install
   return INITIAL_35_BRANDS_DOCUMENT;
 }
 
