@@ -15,14 +15,34 @@ const VERSION_KEY = 'carlamps_catalog_version';
  */
 function isDocumentOutdated(doc: any): boolean {
   if (!doc || !Array.isArray(doc.rows) || doc.rows.length === 0) return true;
-  // If version doesn't match current unified version
-  if (doc.version !== CURRENT_DATABASE_VERSION) {
-    // If it's a default/sample catalog (not a custom user document with custom name)
-    if (!doc.name || doc.name.includes('Baza') || doc.name.includes('35 Marek') || doc.rows.length < 266) {
-      return true;
-    }
+  // If version doesn't match current unified version (2026.1) or row count is less than 266
+  if (doc.version !== CURRENT_DATABASE_VERSION || doc.rows.length < 266) {
+    return true;
   }
   return false;
+}
+
+/**
+ * Completely resets and forces the master 266 models / 35 brands database
+ */
+export async function forceResetMasterDatabase(): Promise<ImportedDocument> {
+  try {
+    const db = await openDB();
+    const transaction = db.transaction([STORE_NAME], 'readwrite');
+    const store = transaction.objectStore(STORE_NAME);
+    store.put(INITIAL_35_BRANDS_DOCUMENT, DOCUMENT_KEY);
+  } catch (_) {}
+
+  try {
+    const serialized = JSON.stringify(INITIAL_35_BRANDS_DOCUMENT);
+    localStorage.setItem(MASTER_CACHE_KEY, serialized);
+    localStorage.setItem(SNAPSHOT_KEY, serialized);
+    localStorage.setItem(VERSION_KEY, CURRENT_DATABASE_VERSION);
+    localStorage.setItem('carlamps_last_sync_timestamp', new Date().toISOString());
+  } catch (_) {}
+
+  saveMasterCatalogToServer(INITIAL_35_BRANDS_DOCUMENT).catch(() => {});
+  return INITIAL_35_BRANDS_DOCUMENT;
 }
 
 /**
