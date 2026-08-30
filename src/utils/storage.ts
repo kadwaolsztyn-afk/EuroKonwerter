@@ -15,8 +15,8 @@ const VERSION_KEY = 'carlamps_catalog_version';
  */
 function isDocumentOutdated(doc: any): boolean {
   if (!doc || !Array.isArray(doc.rows) || doc.rows.length === 0) return true;
-  // If version doesn't match current unified version (2026.1) or row count is less than 266
-  if (doc.version !== CURRENT_DATABASE_VERSION || doc.rows.length < 266) {
+  // If version doesn't match current unified version (2026.03_ALL_v461) or row count is less than 460
+  if (doc.version !== CURRENT_DATABASE_VERSION || doc.rows.length < 460) {
     return true;
   }
   return false;
@@ -55,7 +55,7 @@ export function getSynchronousInitialDocument(): ImportedDocument {
       const raw = localStorage.getItem(MASTER_CACHE_KEY) || localStorage.getItem(SNAPSHOT_KEY);
       if (raw) {
         const parsed = JSON.parse(raw);
-        if (parsed && Array.isArray(parsed.rows) && parsed.rows.length >= 266 && !isDocumentOutdated(parsed)) {
+        if (parsed && Array.isArray(parsed.rows) && parsed.rows.length >= 460 && !isDocumentOutdated(parsed)) {
           if (parsed.importedAt && typeof parsed.importedAt === 'string') {
             parsed.importedAt = new Date(parsed.importedAt);
           }
@@ -492,7 +492,7 @@ export async function loadDocumentFromStorage(): Promise<ImportedDocument | null
   // 2. Check server master catalog first when online to guarantee cross-device parity
   try {
     const serverDoc = await fetchMasterCatalogFromServer();
-    if (serverDoc && serverDoc.rows && serverDoc.rows.length >= 266) {
+    if (serverDoc && serverDoc.rows && serverDoc.rows.length >= 460) {
       await saveDocumentToStorage(serverDoc);
       return serverDoc;
     }
