@@ -99,21 +99,44 @@ async function startServer() {
 
   // Enable Gzip/Deflate compression for fast loading over mobile and web networks
   app.use(compression({
-    level: 6,
-    threshold: 512,
+    level: 4,
+    threshold: 1024,
+    filter: (req, res) => {
+      if (req.path.match(/\.(png|jpe?g|webp|svg|ico|gif|woff2?|zip)$/i)) {
+        return false;
+      }
+      return compression.filter(req, res);
+    },
   }));
 
   // Allow up to 50MB payload for documents with photos/base64
   app.use(express.json({ limit: '50mb' }));
   app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-  // Serve portable uploaded photos directly from program folder
-  app.use('/uploads', express.static(UPLOADS_DIR, { maxAge: '30d' }));
-  app.use('/uploads', express.static(PUBLIC_UPLOADS_DIR, { maxAge: '30d' }));
+  // Favicon and app icon handlers to avoid HTML fallback overhead
+  app.get('/favicon.ico', (req, res) => {
+    const icoPath = path.join(process.cwd(), 'public', 'favicon.ico');
+    const pngPath = path.join(process.cwd(), 'public', 'icon.png');
+    if (fs.existsSync(icoPath)) return res.sendFile(icoPath);
+    if (fs.existsSync(pngPath)) return res.sendFile(pngPath);
+    res.status(204).end();
+  });
 
-  // Health check
-  app.get('/api/health', (req, res) => {
-    res.json({ status: 'ok', time: new Date().toISOString() });
+  app.get(['/apple-touch-icon.png', '/apple-touch-icon-precomposed.png'], (req, res) => {
+    const pngPath = path.join(process.cwd(), 'public', 'icon-192.png');
+    if (fs.existsSync(pngPath)) return res.sendFile(pngPath);
+    res.status(204).end();
+  });
+
+  // Health checks for Cloud Run, Kubernetes, and uptime monitoring
+  app.get(['/api/health', '/health', '/healthz', '/_health'], (req, res) => {
+    res.json({
+      status: 'ok',
+      service: 'cennik-server',
+      version: '2026.03_ALL_v461_MASTER_PHOTOS_V5',
+      uptime: process.uptime(),
+      timestamp: new Date().toISOString(),
+    });
   });
 
   // GET pricing settings & persistent discount rules
@@ -766,8 +789,14 @@ async function startServer() {
     }
   });
 
-  // Vite development middleware or static production serve
-  if (process.env.NODE_ENV !== 'production') {
+  // Robust production detection: Cloud Run (K_SERVICE), bundled server.cjs, NODE_ENV=production, or presence of dist/index.html
+  const isProduction =
+    process.env.NODE_ENV === 'production' ||
+    Boolean(process.env.K_SERVICE) ||
+    (typeof __filename !== 'undefined' && __filename.endsWith('.cjs')) ||
+    (process.env.NODE_ENV !== 'development' && fs.existsSync(path.join(process.cwd(), 'dist', 'index.html')));
+
+  if (!isProduction) {
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
@@ -778,9 +807,19 @@ async function startServer() {
     app.use(express.static(distPath, {
       maxAge: '1d',
       etag: true,
+      index: 'index.html',
     }));
-    app.get('*', (req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
+    app.get('*', (req, res, next) => {
+      const indexPath = path.join(distPath, 'index.html');
+      if (fs.existsSync(indexPath)) {
+        res.sendFile(indexPath, (err) => {
+          if (err && !res.headersSent) {
+            next(err);
+          }
+        });
+      } else {
+        res.status(404).send('Application build not found. Please build the frontend.');
+      }
     });
   }
 
