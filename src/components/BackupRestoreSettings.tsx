@@ -24,6 +24,12 @@ import {
   Radio,
   Sliders,
   Check,
+  Key,
+  Send,
+  Eye,
+  EyeOff,
+  HelpCircle,
+  GitCommit,
 } from 'lucide-react';
 import { ImportedDocument } from '../types';
 import { exportFullBackupJSON, importFullBackupJSON } from '../utils/storage';
@@ -32,6 +38,8 @@ import {
   saveGitHubSyncConfig,
   checkGitHubReleaseUpdates,
   pullDatabaseFromGitHub,
+  pushDatabaseToGitHub,
+  syncCatalogToSourceCode,
   GitHubSyncConfig,
   GitHubCheckResult,
 } from '../utils/githubSync';
@@ -66,10 +74,15 @@ export const BackupRestoreSettings: React.FC<BackupRestoreSettingsProps> = ({
   const [ghConfig, setGhConfig] = useState<GitHubSyncConfig>(getGitHubSyncConfig());
   const [isCheckingGH, setIsCheckingGH] = useState(false);
   const [isPullingGH, setIsPullingGH] = useState(false);
+  const [isPushingGH, setIsPushingGH] = useState(false);
+  const [isSyncingSource, setIsSyncingSource] = useState(false);
   const [ghCheckResult, setGhCheckResult] = useState<GitHubCheckResult | null>(null);
   const [isEditingGhConfig, setIsEditingGhConfig] = useState(false);
   const [editRepoUrl, setEditRepoUrl] = useState(ghConfig.repoUrl);
   const [editReleaseTag, setEditReleaseTag] = useState(ghConfig.releaseTag);
+  const [editGhToken, setEditGhToken] = useState(ghConfig.githubToken || '');
+  const [showTokenField, setShowTokenField] = useState(Boolean(ghConfig.githubToken));
+  const [showTokenSecret, setShowTokenSecret] = useState(false);
 
   useEffect(() => {
     // Initial silent check on mount
@@ -133,14 +146,74 @@ export const BackupRestoreSettings: React.FC<BackupRestoreSettingsProps> = ({
     }
   };
 
+  const handlePushGitHub = async () => {
+    const tokenToUse = editGhToken.trim() || ghConfig.githubToken;
+    if (!tokenToUse) {
+      setShowTokenField(true);
+      setIsEditingGhConfig(true);
+      showError('Podaj swój token GitHub (Personal Access Token), aby wysyłać zmiany prosto do repozytorium i aktualizować Vercel.');
+      return;
+    }
+
+    try {
+      setIsPushingGH(true);
+      const res = await pushDatabaseToGitHub(document, tokenToUse);
+      if (res.success) {
+        setGhConfig(getGitHubSyncConfig());
+        showSuccess(
+          res.message || 'Pomyślnie wysłano zaktualizowaną bazę ze zdjęciami do GitHub! Vercel automatycznie rozpoczął wdrażanie.'
+        );
+        handleCheckGitHub(true);
+      } else {
+        showError(res.error || 'Nie udało się wysłać bazy do GitHub.');
+      }
+    } catch (err: any) {
+      showError(err?.message || 'Błąd podczas wysyłania do GitHub.');
+    } finally {
+      setIsPushingGH(false);
+    }
+  };
+
+  const handleSyncToSourceCode = async () => {
+    try {
+      setIsSyncingSource(true);
+      const res = await syncCatalogToSourceCode(document);
+      if (res.success) {
+        showSuccess(res.message || 'Zapisano pliki źródłowe! Google AI Studio widzi teraz wszystkie zmiany w kodzie projektu.');
+      } else {
+        showError(res.error || 'Nie udało się zapisać plików źródłowych na serwerze.');
+      }
+    } catch (err: any) {
+      showError(err?.message || 'Błąd zapisu plików źródłowych.');
+    } finally {
+      setIsSyncingSource(false);
+    }
+  };
+
+  const handleDownloadCatalogJson = () => {
+    try {
+      const dataStr = 'data:text/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(document, null, 2));
+      const a = document.createElement('a');
+      a.setAttribute('href', dataStr);
+      a.setAttribute('download', 'data-catalog.json');
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      showSuccess('Pobrano plik data-catalog.json ze wszystkimi zdjęciami i cenami.');
+    } catch {
+      showError('Błąd pobierania pliku data-catalog.json.');
+    }
+  };
+
   const handleSaveGhConfig = async () => {
     const updated = await saveGitHubSyncConfig({
       repoUrl: editRepoUrl,
       releaseTag: editReleaseTag,
+      githubToken: editGhToken.trim(),
     });
     setGhConfig(updated);
     setIsEditingGhConfig(false);
-    showSuccess('Zapisano konfigurację repozytorium GitHub.');
+    showSuccess('Zapisano konfigurację repozytorium oraz token GitHub.');
     handleCheckGitHub(false);
   };
 
@@ -403,7 +476,7 @@ export const BackupRestoreSettings: React.FC<BackupRestoreSettingsProps> = ({
         </div>
       </div>
 
-      {/* CARD 3: Synchronizacja Online z GitHub Releases (tag: Baza) */}
+      {/* CARD 3: Synchronizacja Online z GitHub i Publikacja (Push & Pull) */}
       <div className="bg-slate-900 border border-slate-800 hover:border-indigo-500/40 rounded-2xl p-6 shadow-xl relative overflow-hidden transition-all duration-200">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 mb-5 border-b border-slate-800 pb-5">
           <div className="flex items-start gap-4">
@@ -413,10 +486,10 @@ export const BackupRestoreSettings: React.FC<BackupRestoreSettingsProps> = ({
             <div>
               <div className="flex flex-wrap items-center gap-2">
                 <h3 className="text-base font-bold text-white flex items-center gap-2">
-                  Synchronizacja Bazy Online (GitHub Releases)
+                  Synchronizacja z GitHub & Vercel (Push & Pull)
                 </h3>
                 <span className="text-[10px] font-mono font-bold uppercase bg-indigo-500/20 text-indigo-300 px-2.5 py-0.5 rounded-full border border-indigo-500/30 flex items-center gap-1">
-                  <GitBranch className="w-3 h-3" /> Tag: {ghConfig.releaseTag || 'Baza'}
+                  <GitBranch className="w-3 h-3" /> Branch: main
                 </span>
                 {ghConfig.checkOnStartup && (
                   <span className="text-[10px] font-medium bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded-full border border-emerald-500/30 flex items-center gap-1">
@@ -425,14 +498,14 @@ export const BackupRestoreSettings: React.FC<BackupRestoreSettingsProps> = ({
                 )}
               </div>
               <p className="text-xs text-slate-400 mt-1 max-w-2xl">
-                Aplikacja weryfikuje bazę danych pod adresem:{' '}
+                Repozytorium:{' '}
                 <a
-                  href={`${(ghConfig.repoUrl || 'https://github.com/kadwaolsztyn-afk/EuroKonwerter').replace(/\/$/, '')}/releases/tag/${ghConfig.releaseTag || 'Baza'}`}
+                  href={ghConfig.repoUrl || 'https://github.com/kadwaolsztyn-afk/EuroKonwerter'}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="text-indigo-400 hover:text-indigo-300 underline font-mono inline-flex items-center gap-1"
                 >
-                  {(ghConfig.repoUrl || 'https://github.com/kadwaolsztyn-afk/EuroKonwerter').replace('https://', '')}/releases/tag/{ghConfig.releaseTag || 'Baza'}
+                  {(ghConfig.repoUrl || 'https://github.com/kadwaolsztyn-afk/EuroKonwerter').replace('https://', '')}
                   <ExternalLink className="w-3 h-3 inline" />
                 </a>
               </p>
@@ -444,7 +517,7 @@ export const BackupRestoreSettings: React.FC<BackupRestoreSettingsProps> = ({
             <button
               type="button"
               onClick={() => handleCheckGitHub(false)}
-              disabled={isCheckingGH || isPullingGH}
+              disabled={isCheckingGH || isPullingGH || isPushingGH}
               className="px-3.5 py-2 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-700 text-slate-200 text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-50"
               title="Sprawdź czy na GitHubie pojawiły się nowe wersje bazy"
             >
@@ -455,29 +528,105 @@ export const BackupRestoreSettings: React.FC<BackupRestoreSettingsProps> = ({
             <button
               type="button"
               onClick={handlePullGitHub}
-              disabled={isPullingGH || isCheckingGH}
-              className="px-4 py-2 rounded-xl bg-gradient-to-r from-indigo-500 to-indigo-600 hover:from-indigo-400 hover:to-indigo-500 text-white text-xs font-bold flex items-center gap-2 shadow-lg shadow-indigo-500/25 transition-all cursor-pointer disabled:opacity-50 active:scale-[0.99]"
+              disabled={isPullingGH || isCheckingGH || isPushingGH}
+              className="px-3.5 py-2 rounded-xl bg-slate-950 hover:bg-slate-800 border border-indigo-500/40 text-indigo-200 text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-50"
+              title="Pobierz ostatnią wersję bazy z GitHub"
             >
               <Download className={`w-4 h-4 ${isPullingGH ? 'animate-bounce' : ''}`} />
-              <span>{isPullingGH ? 'Pobieranie bazy...' : 'Pobierz i Zastosuj Bazę z GitHub'}</span>
+              <span>{isPullingGH ? 'Pobieranie...' : 'Pobierz z GitHub (Pull)'}</span>
             </button>
 
             <button
               type="button"
               onClick={() => setIsEditingGhConfig(!isEditingGhConfig)}
               className="p-2 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-800 text-slate-400 hover:text-white text-xs transition-colors cursor-pointer"
-              title="Zmień adres repozytorium lub tag wydania"
+              title="Konfiguracja tokena i repozytorium GitHub"
             >
               <Sliders className="w-4 h-4" />
             </button>
           </div>
         </div>
 
+        {/* Highlight Section: Push to GitHub & Deploy to Vercel */}
+        <div className="mb-5 p-4 rounded-xl bg-gradient-to-br from-indigo-950/60 via-slate-950 to-slate-950 border border-indigo-500/40 relative overflow-hidden">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div>
+              <div className="flex items-center gap-2 mb-1">
+                <span className="w-2.5 h-2.5 rounded-full bg-indigo-400 animate-pulse" />
+                <h4 className="text-sm font-bold text-white flex items-center gap-2">
+                  Publikacja Dodanych Zdjęć i Zmian na GitHub / Vercel
+                </h4>
+              </div>
+              <p className="text-xs text-slate-300 leading-relaxed max-w-2xl">
+                Aktualnie w programie:{' '}
+                <strong className="text-amber-400 font-mono">
+                  {document.rows.filter((r) => r.imageUrl && r.imageUrl.trim()).length} modeli
+                </strong>{' '}
+                posiada dodane zdjęcia (skompresowane WebP). Kliknij poniższy przycisk, aby wysłać aktualizację prosto na GitHub — Vercel automatycznie rozpocznie budowanie i nowe zdjęcia będą widoczne online!
+              </p>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={handlePushGitHub}
+                disabled={isPushingGH || isPullingGH}
+                className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-indigo-500 via-indigo-600 to-indigo-700 hover:from-indigo-400 hover:to-indigo-600 text-white text-xs font-bold flex items-center gap-2 shadow-lg shadow-indigo-500/30 transition-all cursor-pointer disabled:opacity-50 active:scale-[0.99]"
+              >
+                <GitCommit className={`w-4 h-4 ${isPushingGH ? 'animate-spin' : ''}`} />
+                <span>{isPushingGH ? 'Wysyłanie do GitHub...' : 'Wyślij do GitHub (Auto-Deploy Vercel)'}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={handleSyncToSourceCode}
+                disabled={isSyncingSource}
+                className="px-3.5 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-300 text-xs font-medium flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-50"
+                title="Zapisuje pliki bezpośrednio na dysku serwera (dla AI Studio)"
+              >
+                <FileCode className={`w-3.5 h-3.5 text-emerald-400 ${isSyncingSource ? 'animate-spin' : ''}`} />
+                <span>{isSyncingSource ? 'Zapisywanie...' : 'Zapisz w kodzie (AI Studio)'}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={handleDownloadCatalogJson}
+                className="p-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-300 text-xs transition-colors cursor-pointer"
+                title="Pobierz plik data-catalog.json ze zdjęciami"
+              >
+                <Download className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+
+          {/* Quick notice if no token set */}
+          {(!ghConfig.githubToken || showTokenField) && (
+            <div className="mt-4 pt-3 border-t border-indigo-500/20 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+              <div className="flex items-center gap-2 text-indigo-300">
+                <Key className="w-4 h-4 shrink-0 text-indigo-400" />
+                <span>
+                  {ghConfig.githubToken
+                    ? 'Token GitHub jest zapisany i gotowy do wysyłania zmian.'
+                    : 'Do automatycznego wysyłania wymagany jest GitHub Personal Access Token (PAT).'}
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsEditingGhConfig(true)}
+                className="text-xs text-indigo-400 hover:text-indigo-200 underline font-semibold flex items-center gap-1 cursor-pointer self-start sm:self-auto"
+              >
+                <span>{ghConfig.githubToken ? 'Zmień token' : 'Wprowadź token GitHub'}</span>
+                <ExternalLink className="w-3 h-3" />
+              </button>
+            </div>
+          )}
+        </div>
+
         {/* Configuration collapse panel */}
         {isEditingGhConfig && (
-          <div className="mb-5 p-4 bg-slate-950 border border-indigo-500/30 rounded-xl space-y-3 animate-fadeIn">
+          <div className="mb-5 p-4 bg-slate-950 border border-indigo-500/30 rounded-xl space-y-4 animate-fadeIn">
             <h4 className="text-xs font-bold text-white flex items-center gap-2">
-              <Sliders className="w-3.5 h-3.5 text-indigo-400" /> Konfiguracja Repozytorium GitHub
+              <Sliders className="w-3.5 h-3.5 text-indigo-400" /> Konfiguracja Repozytorium i Tokena GitHub
             </h4>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               <div>
@@ -491,7 +640,7 @@ export const BackupRestoreSettings: React.FC<BackupRestoreSettingsProps> = ({
                 />
               </div>
               <div>
-                <label className="block text-[11px] text-slate-400 mb-1">Tag Wydania (Release Tag)</label>
+                <label className="block text-[11px] text-slate-400 mb-1">Tag Wydania dla Pull (Release Tag)</label>
                 <input
                   type="text"
                   value={editReleaseTag}
@@ -501,11 +650,50 @@ export const BackupRestoreSettings: React.FC<BackupRestoreSettingsProps> = ({
                 />
               </div>
             </div>
+
+            {/* GitHub PAT Token input */}
+            <div className="p-3 bg-slate-900/80 border border-slate-800 rounded-lg space-y-2">
+              <div className="flex items-center justify-between">
+                <label className="text-[11px] font-semibold text-slate-300 flex items-center gap-1.5">
+                  <Key className="w-3.5 h-3.5 text-amber-400" />
+                  <span>GitHub Personal Access Token (PAT)</span>
+                </label>
+                <a
+                  href="https://github.com/settings/tokens/new?scopes=repo&description=EuroKonwerter%20App%20Sync"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-[10px] text-indigo-400 hover:text-indigo-300 underline flex items-center gap-1"
+                >
+                  <span>Wygeneruj token na GitHub (uprawnienie 'repo')</span>
+                  <ExternalLink className="w-3 h-3" />
+                </a>
+              </div>
+              <div className="relative">
+                <input
+                  type={showTokenSecret ? 'text' : 'password'}
+                  value={editGhToken}
+                  onChange={(e) => setEditGhToken(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-700 rounded-lg pl-3 pr-10 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-400 font-mono"
+                  placeholder="ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowTokenSecret(!showTokenSecret)}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 cursor-pointer"
+                >
+                  {showTokenSecret ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                </button>
+              </div>
+              <p className="text-[10px] text-slate-400">
+                Token jest bezpiecznie zapisywany w Twojej przeglądarce (LocalStorage) i służy wyłącznie do wysyłania zmian bezpośrednio do Twojego repozytorium GitHub na branch <code className="text-indigo-300">main</code>.
+              </p>
+            </div>
+
             <div className="flex justify-end gap-2 pt-1">
               <button
                 type="button"
                 onClick={() => setIsEditingGhConfig(false)}
-                className="px-3 py-1 text-xs text-slate-400 hover:text-white"
+                className="px-3 py-1 text-xs text-slate-400 hover:text-white cursor-pointer"
               >
                 Anuluj
               </button>
@@ -514,7 +702,7 @@ export const BackupRestoreSettings: React.FC<BackupRestoreSettingsProps> = ({
                 onClick={handleSaveGhConfig}
                 className="px-4 py-1.5 bg-indigo-500 hover:bg-indigo-400 text-white font-bold text-xs rounded-lg transition-colors cursor-pointer"
               >
-                Zapisz Ustawienia
+                Zapisz Ustawienia & Token
               </button>
             </div>
           </div>
@@ -553,16 +741,11 @@ export const BackupRestoreSettings: React.FC<BackupRestoreSettingsProps> = ({
           </div>
 
           <div className="bg-slate-950/80 border border-slate-800 rounded-xl p-3 text-xs">
-            <div className="text-[11px] text-slate-400 mb-1">Ostatnia Synchronizacja:</div>
-            <span className="font-semibold text-indigo-300 font-mono">
+            <div className="text-[11px] text-slate-400 mb-1">Ostatnia Synchronizacja / Wersja:</div>
+            <span className="font-semibold text-indigo-300 font-mono truncate block" title={ghConfig.lastVersion || document.version}>
               {ghConfig.lastSynced
-                ? `${new Date(ghConfig.lastSynced).toLocaleString('pl-PL', {
-                    day: '2-digit',
-                    month: '2-digit',
-                    hour: '2-digit',
-                    minute: '2-digit',
-                  })} (${ghConfig.lastTotalRows || document.totalRows} modeli)`
-                : 'Baza lokalna aktywna'}
+                ? `${new Date(ghConfig.lastSynced).toLocaleDateString('pl-PL')} (${ghConfig.lastTotalRows || document.totalRows} modeli)`
+                : ghConfig.lastVersion || document.version}
             </span>
           </div>
         </div>

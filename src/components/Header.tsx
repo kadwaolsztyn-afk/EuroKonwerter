@@ -20,6 +20,7 @@ import {
   Cloud,
   CloudUpload,
   Database,
+  GitCommit,
 } from 'lucide-react';
 import { MainTab, ViewMode, ImportedDocument } from '../types';
 
@@ -39,6 +40,8 @@ interface HeaderProps {
   onResetTo35Brands?: () => void;
   onOpenDesktopBuildInfo?: () => void;
   onSaveToServer?: () => void;
+  onPushToGitHub?: () => void;
+  isPushingToGitHub?: boolean;
   isSaved?: boolean;
   isUnlocked?: boolean;
   onLock?: () => void;
@@ -60,6 +63,8 @@ export const Header: React.FC<HeaderProps> = ({
   onResetTo35Brands,
   onOpenDesktopBuildInfo,
   onSaveToServer,
+  onPushToGitHub,
+  isPushingToGitHub = false,
   isSaved = true,
   isUnlocked = false,
   onLock,
@@ -283,6 +288,18 @@ export const Header: React.FC<HeaderProps> = ({
                   >
                     <CloudUpload className="w-3.5 h-3.5" />
                     <span className="hidden md:inline">Zapisz na serwerze</span>
+                  </button>
+                )}
+
+                {onPushToGitHub && (
+                  <button
+                    onClick={onPushToGitHub}
+                    disabled={isPushingToGitHub}
+                    className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-indigo-500 to-indigo-600 hover:from-indigo-400 hover:to-indigo-500 text-white rounded-lg text-xs font-bold shadow-md shadow-indigo-500/20 transition-all cursor-pointer border border-indigo-400/40 disabled:opacity-50"
+                    title="Wyślij zaktualizowaną bazę ze zdjęciami bezpośrednio do repozytorium GitHub (automatyczna publikacja na Vercel)"
+                  >
+                    <GitCommit className={`w-3.5 h-3.5 ${isPushingToGitHub ? 'animate-spin' : ''}`} />
+                    <span className="hidden sm:inline">{isPushingToGitHub ? 'Wysyłanie...' : 'Wyślij do GitHub / Vercel'}</span>
                   </button>
                 )}
 

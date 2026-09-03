@@ -28,6 +28,13 @@ if (!fs.existsSync(PUBLIC_UPLOADS_DIR)) {
  */
 function syncDocumentEverywhere(document: any) {
   try {
+    const now = new Date();
+    const timeSuffix = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`;
+    const version = document.version && document.version.startsWith('2026.03_ALL_v461_SYNC_') 
+      ? document.version 
+      : `2026.03_ALL_v461_SYNC_${timeSuffix}`;
+    
+    document.version = version;
     const jsonStr = JSON.stringify(document, null, 2);
 
     // 1. Root data-catalog.json
@@ -48,7 +55,6 @@ function syncDocumentEverywhere(document: any) {
         const rowsJson = JSON.stringify(document.rows || [], null, 2);
         const headersJson = JSON.stringify(document.headers || [], null, 4);
         const imagesJson = JSON.stringify(document.images || [], null, 4);
-        const version = document.version || '2026.03_ALL_v461_VERCEL_SYNC_V4';
         const docName = document.name || 'Baza Pojazdów USA/EU (Cennik 2026 - 461 Pozycji)';
         const docId = document.id || 'cennik-all-461-master';
         const totalRows = document.rows ? document.rows.length : 461;
@@ -64,8 +70,8 @@ export const INITIAL_COMPREHENSIVE_CATALOG: ImportedDocument = {
   id: ${JSON.stringify(docId)},
   name: ${JSON.stringify(docName)},
   fileType: "json",
-  sizeFormatted: "240 KB",
-  importedAt: new Date(${JSON.stringify(new Date().toISOString())}),
+  sizeFormatted: "320 KB",
+  importedAt: new Date(${JSON.stringify(now.toISOString())}),
   version: CURRENT_DATABASE_VERSION,
   totalRows: ${totalRows},
   brandsCount: ${brandsCount},

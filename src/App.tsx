@@ -14,6 +14,7 @@ import {
 } from './utils/storage';
 import { mergeDocuments } from './utils/documentMerger';
 import { uploadImageToProgramFolder } from './utils/imageUpload';
+import { pushDatabaseToGitHub, getGitHubSyncConfig } from './utils/githubSync';
 import { Header } from './components/Header';
 import { SettingsView } from './components/SettingsView';
 import { ClientView } from './components/ClientView';
@@ -352,6 +353,8 @@ export default function App() {
     window.print();
   };
 
+  const [isPushingGH, setIsPushingGH] = useState(false);
+
   const handleSaveToServer = async () => {
     if (!currentDocument) return;
     const ok = await saveMasterCatalogToServer(currentDocument);
@@ -361,6 +364,35 @@ export default function App() {
       );
     } else {
       showNotification('Baza zapisana lokalnie w pamięci przeglądarki.');
+    }
+  };
+
+  const handlePushToGitHub = async () => {
+    if (!currentDocument) return;
+    const config = getGitHubSyncConfig();
+    if (!config.githubToken) {
+      setMainTab('settings');
+      setViewMode('backup');
+      showNotification(
+        'Wprowadź token GitHub (Personal Access Token) w sekcji Kopia i Przywracanie Bazy, aby móc automatycznie publikować na GitHub i Vercel.'
+      );
+      return;
+    }
+
+    try {
+      setIsPushingGH(true);
+      const res = await pushDatabaseToGitHub(currentDocument);
+      if (res.success) {
+        showNotification(
+          res.message || 'Pomyślnie wysłano zaktualizowaną bazę ze zdjęciami do GitHub! Vercel już aktualizuje stronę.'
+        );
+      } else {
+        showNotification(`Błąd wysyłania do GitHub: ${res.error}`);
+      }
+    } catch (err: any) {
+      showNotification(`Błąd wysyłania: ${err?.message || 'Nieznany błąd'}`);
+    } finally {
+      setIsPushingGH(false);
     }
   };
 
@@ -391,6 +423,8 @@ export default function App() {
         onResetDocument={handleOpenRestoreModal}
         onResetTo35Brands={handlePerformReset}
         onSaveToServer={handleSaveToServer}
+        onPushToGitHub={handlePushToGitHub}
+        isPushingToGitHub={isPushingGH}
         isSaved={isSavedInMemory}
         isUnlocked={isUnlocked}
         onLock={handleLockSession}

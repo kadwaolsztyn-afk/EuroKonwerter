@@ -9,8 +9,10 @@ export interface GitHubSyncConfig {
   repoUrl: string;
   releaseTag: string;
   targetAssetFileName: string;
+  githubToken?: string;
   lastChecked?: string | null;
   lastSynced?: string | null;
+  lastPushed?: string | null;
   lastVersion?: string | null;
   lastTotalRows?: number | null;
 }
@@ -606,4 +608,248 @@ function parseGitHubReleaseResponse(data: any, config: GitHubSyncConfig): GitHub
     matchingAsset: matchingAsset,
     message: `Połączono z GitHub Release: ${data.name || data.tag_name} (${assets.length} załączników)`,
   };
+}
+
+/**
+ * Encodes string to UTF-8 base64 safely in all environments
+ */
+function encodeBase64Utf8(str: string): string {
+  const bytes = new TextEncoder().encode(str);
+  let binary = '';
+  const len = bytes.byteLength;
+  for (let i = 0; i < len; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
+
+/**
+ * Generates initialCatalog.ts file contents from current document
+ */
+export function generateInitialCatalogTs(document: ImportedDocument, version: string): string {
+  const rowsJson = JSON.stringify(document.rows || [], null, 2);
+  const headersJson = JSON.stringify(document.headers || [], null, 4);
+  const imagesJson = JSON.stringify(document.images || [], null, 4);
+  const docName = document.name || 'Baza Pojazdów USA/EU (Cennik 2026 - 461 Pozycji)';
+  const docId = document.id || 'cennik-all-461-master';
+  const totalRows = document.rows ? document.rows.length : 461;
+  const brandsCount = document.brandsCount || 34;
+
+  return `import { DocumentRow, ImportedDocument } from '../types';
+
+export const CURRENT_DATABASE_VERSION = ${JSON.stringify(version)};
+
+export const INITIAL_461_CATALOG_ROWS: DocumentRow[] = ${rowsJson};
+
+export const INITIAL_COMPREHENSIVE_CATALOG: ImportedDocument = {
+  id: ${JSON.stringify(docId)},
+  name: ${JSON.stringify(docName)},
+  fileType: "json",
+  sizeFormatted: "320 KB",
+  importedAt: new Date(${JSON.stringify(new Date().toISOString())}),
+  version: CURRENT_DATABASE_VERSION,
+  totalRows: ${totalRows},
+  brandsCount: ${brandsCount},
+  headers: ${headersJson},
+  images: ${imagesJson},
+  rows: INITIAL_461_CATALOG_ROWS
+};
+
+// Backwards compatibility alias
+export const INITIAL_35_BRANDS_DOCUMENT = INITIAL_COMPREHENSIVE_CATALOG;
+`;
+}
+
+/**
+ * Updates or creates a file in GitHub repository using GitHub Contents REST API
+ */
+async function updateGitHubFileViaApi(
+  owner: string,
+  repo: string,
+  filePath: string,
+  contentStr: string,
+  token: string,
+  commitMessage: string,
+  branch = 'main'
+): Promise<{ success: boolean; error?: string; sha?: string }> {
+  const cleanToken = token.trim();
+  const headers: Record<string, string> = {
+    Accept: 'application/vnd.github.v3+json',
+    Authorization: cleanToken.startsWith('Bearer ') || cleanToken.startsWith('token ') ? cleanToken : `Bearer ${cleanToken}`,
+  };
+
+  // 1. Check current SHA
+  let currentSha: string | undefined;
+  try {
+    const checkRes = await fetch(
+      `https://api.github.com/repos/${owner}/${repo}/contents/${filePath}?ref=${branch}`,
+      { headers }
+    );
+    if (checkRes.ok) {
+      const checkData = await checkRes.json();
+      currentSha = checkData.sha;
+    }
+  } catch (_) {}
+
+  // 2. Put file to GitHub
+  const base64Content = encodeBase64Utf8(contentStr);
+  const putRes = await fetch(
+    `https://api.github.com/repos/${owner}/${repo}/contents/${filePath}`,
+    {
+      method: 'PUT',
+      headers: {
+        ...headers,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        message: commitMessage,
+        content: base64Content,
+        sha: currentSha,
+        branch,
+      }),
+    }
+  );
+
+  if (!putRes.ok) {
+    const errData = await putRes.json().catch(() => ({}));
+    const message = errData.message || `HTTP ${putRes.status} ${putRes.statusText}`;
+    return { success: false, error: message };
+  }
+
+  const resData = await putRes.json().catch(() => ({}));
+  return { success: true, sha: resData?.commit?.sha };
+}
+
+/**
+ * Pushes the complete database (with all images as WebP) directly to GitHub repository.
+ * Updates public/data-catalog.json, data-catalog.json, and src/data/initialCatalog.ts on branch main.
+ * This immediately triggers Vercel automatic build and publishes changes globally.
+ */
+export async function pushDatabaseToGitHub(
+  document: ImportedDocument,
+  token?: string,
+  customCommitMessage?: string
+): Promise<{
+  success: boolean;
+  message?: string;
+  error?: string;
+  pushedFiles?: string[];
+  commitSha?: string;
+  version?: string;
+}> {
+  const config = getGitHubSyncConfig();
+  const authToken = token || config.githubToken;
+  if (!authToken || !authToken.trim()) {
+    return {
+      success: false,
+      error: 'Brak tokena GitHub (Personal Access Token). Wklej token w ustawieniach, aby wysłać zmiany do repozytorium.',
+    };
+  }
+
+  const parsedRepo = parseGitHubRepoUrl(config.repoUrl);
+  if (!parsedRepo) {
+    return {
+      success: false,
+      error: 'Nieprawidłowy adres repozytorium GitHub w konfiguracji.',
+    };
+  }
+
+  const now = new Date();
+  const version = `2026.03_ALL_v461_SYNC_${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`;
+
+  const docWithVersion: ImportedDocument = {
+    ...document,
+    version,
+    importedAt: now,
+  };
+
+  const imagesCount = docWithVersion.rows.filter((r) => r.imageUrl && r.imageUrl.trim()).length;
+  const commitMsg =
+    customCommitMessage ||
+    `Aktualizacja bazy (${docWithVersion.rows.length} pozycji, ${imagesCount} zdjęć, wersja ${version})`;
+
+  const jsonStr = JSON.stringify(docWithVersion, null, 2);
+  const tsStr = generateInitialCatalogTs(docWithVersion, version);
+
+  const filesToPush = [
+    { path: 'public/data-catalog.json', content: jsonStr },
+    { path: 'data-catalog.json', content: jsonStr },
+    { path: 'src/data/initialCatalog.ts', content: tsStr },
+  ];
+
+  const pushedFiles: string[] = [];
+  let lastCommitSha: string | undefined;
+
+  for (const f of filesToPush) {
+    const res = await updateGitHubFileViaApi(
+      parsedRepo.owner,
+      parsedRepo.repo,
+      f.path,
+      f.content,
+      authToken,
+      commitMsg
+    );
+    if (!res.success) {
+      return {
+        success: false,
+        error: `Błąd podczas wysyłania ${f.path}: ${res.error}`,
+      };
+    }
+    pushedFiles.push(f.path);
+    if (res.sha) lastCommitSha = res.sha;
+  }
+
+  // Update local config
+  await saveGitHubSyncConfig({
+    lastPushed: now.toISOString(),
+    lastSynced: now.toISOString(),
+    lastVersion: version,
+    lastTotalRows: docWithVersion.rows.length,
+    ...(token ? { githubToken: token } : {}),
+  });
+
+  // Sync to local client storage & local dev server if available
+  await saveDocumentToStorage(docWithVersion);
+
+  return {
+    success: true,
+    message: `Pomyślnie zaktualizowano GitHub! Zapisano ${pushedFiles.length} pliki (${imagesCount} zdjęć). Vercel rozpoczął automatyczne wdrażanie!`,
+    pushedFiles,
+    commitSha: lastCommitSha,
+    version,
+  };
+}
+
+/**
+ * Directly writes document to src/data/initialCatalog.ts and public/data-catalog.json on server disk
+ * so Google AI Studio immediately detects changed files in the project workspace.
+ */
+export async function syncCatalogToSourceCode(document: ImportedDocument): Promise<{
+  success: boolean;
+  message?: string;
+  error?: string;
+}> {
+  try {
+    const res = await fetch('/api/sync/to-source-code', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ document }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      return {
+        success: true,
+        message: data.message || 'Zapisano pliki źródłowe na dysku projektu. AI Studio widzi teraz zmiany!',
+      };
+    }
+    return {
+      success: false,
+      error: `Serwer zwrócił błąd HTTP ${res.status}.`,
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      error: err?.message || 'Błąd połączenia z lokalnym serwerem dev.',
+    };
+  }
 }
