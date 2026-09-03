@@ -114,6 +114,9 @@ async function startServer() {
   app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
   // Favicon and app icon handlers to avoid HTML fallback overhead
+  app.use('/uploads', express.static(UPLOADS_DIR, { maxAge: '30d' }));
+  app.use('/uploads', express.static(PUBLIC_UPLOADS_DIR, { maxAge: '30d' }));
+
   app.get('/favicon.ico', (req, res) => {
     const icoPath = path.join(process.cwd(), 'public', 'favicon.ico');
     const pngPath = path.join(process.cwd(), 'public', 'icon.png');
@@ -803,7 +806,14 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
-    const distPath = path.join(process.cwd(), 'dist');
+    const cwdDist = path.join(process.cwd(), 'dist');
+    const dirnameDist = typeof __dirname !== 'undefined' ? __dirname : cwdDist;
+    const distPath = fs.existsSync(path.join(cwdDist, 'index.html'))
+      ? cwdDist
+      : fs.existsSync(path.join(dirnameDist, 'index.html'))
+      ? dirnameDist
+      : cwdDist;
+
     app.use(express.static(distPath, {
       maxAge: '1d',
       etag: true,
@@ -823,8 +833,24 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
+  const server = app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 Cennik server running on http://0.0.0.0:${PORT}`);
+  });
+
+  process.on('SIGTERM', () => {
+    console.log('SIGTERM signal received: closing HTTP server');
+    server.close(() => {
+      console.log('HTTP server closed');
+      process.exit(0);
+    });
+  });
+
+  process.on('SIGINT', () => {
+    console.log('SIGINT signal received: closing HTTP server');
+    server.close(() => {
+      console.log('HTTP server closed');
+      process.exit(0);
+    });
   });
 }
 
