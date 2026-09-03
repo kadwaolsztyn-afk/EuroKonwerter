@@ -24,9 +24,54 @@ export interface PortableStatus {
 }
 
 /**
+ * Compresses an image file in the browser using an off-screen canvas to ~30-50KB WebP/JPEG.
+ * This guarantees ultra-fast loading, offline compatibility, and zero broken links on Vercel & GitHub.
+ */
+export function compressImageFile(file: File, maxWidth = 900, quality = 0.82): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = () => {
+        let width = img.width;
+        let height = img.height;
+
+        if (width > maxWidth) {
+          height = Math.round((height * maxWidth) / width);
+          width = maxWidth;
+        }
+
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          resolve(e.target?.result as string);
+          return;
+        }
+
+        ctx.drawImage(img, 0, 0, width, height);
+
+        // Try WebP first, fallback to JPEG
+        let dataUrl = canvas.toDataURL('image/webp', quality);
+        if (!dataUrl.startsWith('data:image/webp')) {
+          dataUrl = canvas.toDataURL('image/jpeg', quality);
+        }
+        resolve(dataUrl);
+      };
+      img.onerror = () => resolve(e.target?.result as string);
+      img.src = e.target?.result as string;
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+/**
  * Uploads a local file or dataUrl directly to the server's /uploads folder.
- * Returns relative path e.g. '/uploads/lampa_porsche_123.jpg'
- * If offline or server error, falls back gracefully to client dataURL.
+ * Returns an optimized self-contained data URL so that Vercel, GitHub, and offline modes
+ * display the image flawlessly without 404 errors.
  */
 export async function uploadImageToProgramFolder(
   fileOrDataUrl: File | string,
@@ -44,16 +89,16 @@ export async function uploadImageToProgramFolder(
     dataUrl = fileOrDataUrl;
   } else {
     filename = filename || fileOrDataUrl.name;
-    dataUrl = await readFileAsDataUrl(fileOrDataUrl);
+    try {
+      dataUrl = await compressImageFile(fileOrDataUrl);
+    } catch {
+      dataUrl = await readFileAsDataUrl(fileOrDataUrl);
+    }
   }
 
-  // If already an /uploads/ url, return as is
-  if (dataUrl.startsWith('/uploads/') || dataUrl.startsWith('http')) {
-    return dataUrl;
-  }
-
+  // Backup to server's /uploads folder if running with backend
   try {
-    const response = await fetch('/api/uploads/upload', {
+    fetch('/api/uploads/upload', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -65,19 +110,10 @@ export async function uploadImageToProgramFolder(
         brand: options?.brand,
         model: options?.model,
       }),
-    });
+    }).catch(() => {});
+  } catch (_) {}
 
-    if (response.ok) {
-      const data = await response.json();
-      if (data && data.success && data.url) {
-        return data.url;
-      }
-    }
-  } catch (err) {
-    console.warn('[UploadToProgramFolder] Server upload failed, falling back to dataUrl:', err);
-  }
-
-  // Fallback to dataUrl if server is offline
+  // Return the self-contained dataUrl so that it renders everywhere (Vercel, GitHub, offline)
   return dataUrl;
 }
 

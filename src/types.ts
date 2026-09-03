@@ -42,9 +42,11 @@ export interface ExtractedImage {
   id: string;
   src: string;
   originalSrc: string;
+  name?: string;
   brand?: string;
   model?: string;
   rowIndex?: number;
+  rowId?: number;
   width?: number;
   height?: number;
 }

@@ -48,7 +48,7 @@ function syncDocumentEverywhere(document: any) {
         const rowsJson = JSON.stringify(document.rows || [], null, 2);
         const headersJson = JSON.stringify(document.headers || [], null, 4);
         const imagesJson = JSON.stringify(document.images || [], null, 4);
-        const version = document.version || '2026.03_ALL_v461_MEDIA_SYNC';
+        const version = document.version || '2026.03_ALL_v461_VERCEL_SYNC_V4';
         const docName = document.name || 'Baza Pojazdów USA/EU (Cennik 2026 - 461 Pozycji)';
         const docId = document.id || 'cennik-all-461-master';
         const totalRows = document.rows ? document.rows.length : 461;

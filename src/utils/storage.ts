@@ -15,11 +15,46 @@ const VERSION_KEY = 'carlamps_catalog_version';
  */
 function isDocumentOutdated(doc: any): boolean {
   if (!doc || !Array.isArray(doc.rows) || doc.rows.length === 0) return true;
-  // If version doesn't match current unified version (2026.03_ALL_v461) or row count is less than 460
+  // If version doesn't match current unified version or row count is less than 460
   if (doc.version !== CURRENT_DATABASE_VERSION || doc.rows.length < 460) {
     return true;
   }
   return false;
+}
+
+/**
+ * Merges official photos and catalog updates from INITIAL_35_BRANDS_DOCUMENT
+ * into a user document while preserving all custom prices, discounts, and custom notes.
+ */
+function mergeWithInitialCatalog(doc: ImportedDocument): ImportedDocument {
+  const initialMap = new Map(INITIAL_35_BRANDS_DOCUMENT.rows.map((r) => [r.id, r]));
+  const updatedRows = doc.rows.map((row) => {
+    const initRow = initialMap.get(row.id);
+    if (!initRow) return row;
+
+    const initHasRealPhoto = Boolean(
+      initRow.imageUrl &&
+      !initRow.imageUrl.startsWith('data:image/svg')
+    );
+    const localNeedsPhoto = Boolean(
+      !row.imageUrl ||
+      row.imageUrl.startsWith('data:image/svg') ||
+      row.imageUrl.startsWith('/uploads/')
+    );
+
+    return {
+      ...row,
+      imageUrl: (initHasRealPhoto && localNeedsPhoto) ? initRow.imageUrl : (row.imageUrl || initRow.imageUrl),
+    };
+  });
+
+  return {
+    ...doc,
+    version: CURRENT_DATABASE_VERSION,
+    totalRows: updatedRows.length,
+    rows: updatedRows,
+    images: INITIAL_35_BRANDS_DOCUMENT.images || doc.images || [],
+  };
 }
 
 /**
@@ -50,18 +85,18 @@ export async function forceResetMasterDatabase(): Promise<ImportedDocument> {
  */
 export function getSynchronousInitialDocument(): ImportedDocument {
   try {
-    const cachedVersion = localStorage.getItem(VERSION_KEY);
-    if (cachedVersion === CURRENT_DATABASE_VERSION) {
-      const raw = localStorage.getItem(MASTER_CACHE_KEY) || localStorage.getItem(SNAPSHOT_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (parsed && Array.isArray(parsed.rows) && parsed.rows.length >= 460 && !isDocumentOutdated(parsed)) {
-          if (parsed.importedAt && typeof parsed.importedAt === 'string') {
-            parsed.importedAt = new Date(parsed.importedAt);
-          }
-          parsed.rows = sanitizeDocumentRows(parsed.rows);
+    const raw = localStorage.getItem(MASTER_CACHE_KEY) || localStorage.getItem(SNAPSHOT_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && Array.isArray(parsed.rows) && parsed.rows.length >= 460) {
+        if (parsed.importedAt && typeof parsed.importedAt === 'string') {
+          parsed.importedAt = new Date(parsed.importedAt);
+        }
+        parsed.rows = sanitizeDocumentRows(parsed.rows);
+        if (!isDocumentOutdated(parsed)) {
           return parsed;
         }
+        return mergeWithInitialCatalog(parsed);
       }
     }
   } catch (e) {
@@ -484,6 +519,11 @@ export async function loadDocumentFromStorage(): Promise<ImportedDocument | null
         return localDoc;
       }
       console.log('Migrating local storage from outdated version to unified version:', CURRENT_DATABASE_VERSION);
+      if (localDoc.rows.length >= 460) {
+        const upgraded = mergeWithInitialCatalog(localDoc);
+        await saveDocumentToStorage(upgraded);
+        return upgraded;
+      }
     }
   } catch (err) {
     console.warn('Notice: IndexedDB read fallback to localStorage:', err);
@@ -505,12 +545,19 @@ export async function loadDocumentFromStorage(): Promise<ImportedDocument | null
     const raw = localStorage.getItem(MASTER_CACHE_KEY) || localStorage.getItem(SNAPSHOT_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
-      if (parsed && Array.isArray(parsed.rows) && parsed.rows.length > 0 && !isDocumentOutdated(parsed)) {
+      if (parsed && Array.isArray(parsed.rows) && parsed.rows.length > 0) {
         if (parsed.importedAt && typeof parsed.importedAt === 'string') {
           parsed.importedAt = new Date(parsed.importedAt);
         }
         parsed.rows = sanitizeDocumentRows(parsed.rows);
-        return parsed;
+        if (!isDocumentOutdated(parsed)) {
+          return parsed;
+        }
+        if (parsed.rows.length >= 460) {
+          const upgraded = mergeWithInitialCatalog(parsed);
+          saveDocumentToStorage(upgraded).catch(() => {});
+          return upgraded;
+        }
       }
     }
   } catch (err) {
