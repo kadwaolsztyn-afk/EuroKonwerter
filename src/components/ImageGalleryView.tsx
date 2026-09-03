@@ -1,6 +1,7 @@
 import React, { useState, useMemo, useRef } from 'react';
 import { Search, Image as ImageIcon, ExternalLink, X, Car, Filter, Upload, ImagePlus, Sparkles, Trash2, Lightbulb, Tv, Info } from 'lucide-react';
 import { ImportedDocument, DocumentRow, ExtractedImage } from '../types';
+import { uploadImageToProgramFolder } from '../utils/imageUpload';
 
 interface ImageGalleryViewProps {
   document: ImportedDocument;
@@ -52,18 +53,25 @@ export const ImageGalleryView: React.FC<ImageGalleryViewProps> = ({
 
   const [galleryUrlInput, setGalleryUrlInput] = useState('');
 
-  const handleSingleImageUpload = (file: File) => {
+  const handleSingleImageUpload = async (file: File) => {
     if (!editingRowForUpload || !onUpdateRowImage) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      const dataUrl = reader.result as string;
-      onUpdateRowImage(editingRowForUpload.id, dataUrl);
-      if (selectedRow && selectedRow.id === editingRowForUpload.id) {
-        setSelectedRow({ ...selectedRow, imageUrl: dataUrl });
+    const targetRow = editingRowForUpload;
+    setEditingRowForUpload(null);
+
+    try {
+      const finalUrl = await uploadImageToProgramFolder(file, {
+        rowId: targetRow.id,
+        brand: targetRow.brand,
+        model: targetRow.model,
+      });
+
+      onUpdateRowImage(targetRow.id, finalUrl);
+      if (selectedRow && selectedRow.id === targetRow.id) {
+        setSelectedRow({ ...selectedRow, imageUrl: finalUrl });
       }
-      setEditingRowForUpload(null);
-    };
-    reader.readAsDataURL(file);
+    } catch (err) {
+      console.error('Error saving image to uploads folder:', err);
+    }
   };
 
   const handleSaveGalleryUrl = (row: DocumentRow) => {

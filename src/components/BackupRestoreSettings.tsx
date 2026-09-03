@@ -35,6 +35,7 @@ import {
   GitHubSyncConfig,
   GitHubCheckResult,
 } from '../utils/githubSync';
+import { PortableModeCard } from './PortableModeCard';
 
 interface BackupRestoreSettingsProps {
   document: ImportedDocument;
@@ -282,6 +283,9 @@ export const BackupRestoreSettings: React.FC<BackupRestoreSettingsProps> = ({
           </div>
         )}
       </div>
+
+      {/* 100% Portable Mode Status & Local Folder Overview */}
+      <PortableModeCard />
 
       {/* Main Action Cards: 1. Zapisz Backup & 2. Przywróć Backup */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-5">

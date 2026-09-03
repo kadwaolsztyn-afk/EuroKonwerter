@@ -36,6 +36,7 @@ import {
 } from 'lucide-react';
 import { ImportedDocument, DocumentRow } from '../types';
 import { PriceModifierPanel } from './PriceModifierPanel';
+import { uploadImageToProgramFolder } from '../utils/imageUpload';
 
 export type SortColumnKey =
   | 'lp'
@@ -1124,24 +1125,31 @@ export const InteractiveDataGrid: React.FC<InteractiveDataGridProps> = ({
 
   const handleSingleImageSelected = async (file: File) => {
     if (!editingRowForUpload || !onUpdateRowImage) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = reader.result as string;
-      onUpdateRowImage(editingRowForUpload.id, result);
-      if (selectedDetailsRow && selectedDetailsRow.id === editingRowForUpload.id) {
+    const targetRow = editingRowForUpload;
+    setEditingRowForUpload(null);
+
+    try {
+      const finalUrl = await uploadImageToProgramFolder(file, {
+        rowId: targetRow.id,
+        brand: targetRow.brand,
+        model: targetRow.model,
+      });
+
+      onUpdateRowImage(targetRow.id, finalUrl);
+      if (selectedDetailsRow && selectedDetailsRow.id === targetRow.id) {
         setSelectedDetailsRow({
           ...selectedDetailsRow,
-          imageUrl: result,
+          imageUrl: finalUrl,
         });
       }
-      if (activeImageModal && activeImageModal.row.id === editingRowForUpload.id) {
+      if (activeImageModal && activeImageModal.row.id === targetRow.id) {
         setActiveImageModal({
-          row: { ...activeImageModal.row, imageUrl: result },
+          row: { ...activeImageModal.row, imageUrl: finalUrl },
         });
       }
-      setEditingRowForUpload(null);
-    };
-    reader.readAsDataURL(file);
+    } catch (err) {
+      console.error('Failed to save image to program uploads folder:', err);
+    }
   };
 
   const handleSaveCustomUrl = () => {

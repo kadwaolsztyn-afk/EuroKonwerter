@@ -13,6 +13,7 @@ import {
   getSynchronousInitialDocument,
 } from './utils/storage';
 import { mergeDocuments } from './utils/documentMerger';
+import { uploadImageToProgramFolder } from './utils/imageUpload';
 import { Header } from './components/Header';
 import { SettingsView } from './components/SettingsView';
 import { ClientView } from './components/ClientView';
@@ -226,13 +227,18 @@ export default function App() {
 
     if (imageFiles.length === 0) return;
 
-    // Convert all image files to base64 Data URLs
-    const newExtracted: { name: string; dataUrl: string }[] = [];
+    // Upload all image files directly to the local program's /uploads folder
+    const newExtracted: { name: string; url: string }[] = [];
     for (const f of imageFiles) {
-      const bytes = new Uint8Array(await f.arrayBuffer());
-      const mime = getMimeTypeFromExt(f.name);
-      const dataUrl = uint8ArrayToDataUrl(bytes, mime);
-      newExtracted.push({ name: f.name, dataUrl });
+      try {
+        const url = await uploadImageToProgramFolder(f, { suggestedFilename: f.name });
+        newExtracted.push({ name: f.name, url });
+      } catch {
+        const bytes = new Uint8Array(await f.arrayBuffer());
+        const mime = getMimeTypeFromExt(f.name);
+        const dataUrl = uint8ArrayToDataUrl(bytes, mime);
+        newExtracted.push({ name: f.name, url: dataUrl });
+      }
     }
 
     const updatedRows = [...currentDocument.rows];
@@ -262,13 +268,13 @@ export default function App() {
       }
 
       if (matchedRow) {
-        matchedRow.imageUrl = item.dataUrl;
+        matchedRow.imageUrl = item.url;
         attachedCount++;
-        const existingImg = updatedImages.find((img) => img.src === item.dataUrl);
+        const existingImg = updatedImages.find((img) => img.src === item.url);
         if (!existingImg) {
           updatedImages.push({
             id: `batch-img-${Date.now()}-${itemIdx}`,
-            src: item.dataUrl,
+            src: item.url,
             originalSrc: item.name,
             brand: matchedRow.brand,
             model: matchedRow.model,

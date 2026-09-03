@@ -4,9 +4,25 @@ const fs = require('fs');
 
 let mainWindow = null;
 
-// File path for storing window bounds and maximized state
+// Force 100% portable isolation: store all Electron data inside program directory, not in Windows AppData
+const programDir = app.isPackaged ? path.dirname(app.getPath('exe')) : process.cwd();
+const portableDataDir = path.join(programDir, 'data');
+if (!fs.existsSync(portableDataDir)) {
+  try {
+    fs.mkdirSync(portableDataDir, { recursive: true });
+  } catch (_) {}
+}
+
+try {
+  app.setPath('userData', path.join(portableDataDir, 'userData'));
+  app.setPath('sessionData', path.join(portableDataDir, 'sessionData'));
+} catch (e) {
+  // Ignored if setPath cannot be altered at this phase
+}
+
+// File path for storing window bounds and maximized state inside program directory
 function getWindowStateFilePath() {
-  return path.join(app.getPath('userData'), 'window-state.json');
+  return path.join(portableDataDir, 'window-state.json');
 }
 
 function loadWindowState() {

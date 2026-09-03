@@ -7,6 +7,16 @@ import { createServer as createViteServer } from 'vite';
 const PORT = 3000;
 const DATA_FILE = path.join(process.cwd(), 'data-catalog.json');
 const PRICING_SETTINGS_FILE = path.join(process.cwd(), 'pricing-settings.json');
+const UPLOADS_DIR = path.join(process.cwd(), 'uploads');
+const PUBLIC_UPLOADS_DIR = path.join(process.cwd(), 'public', 'uploads');
+
+// Ensure local portable folders exist inside program directory
+if (!fs.existsSync(UPLOADS_DIR)) {
+  fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+}
+if (!fs.existsSync(PUBLIC_UPLOADS_DIR)) {
+  fs.mkdirSync(PUBLIC_UPLOADS_DIR, { recursive: true });
+}
 
 async function startServer() {
   const app = express();
@@ -20,6 +30,10 @@ async function startServer() {
   // Allow up to 50MB payload for documents with photos/base64
   app.use(express.json({ limit: '50mb' }));
   app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+
+  // Serve portable uploaded photos directly from program folder
+  app.use('/uploads', express.static(UPLOADS_DIR, { maxAge: '30d' }));
+  app.use('/uploads', express.static(PUBLIC_UPLOADS_DIR, { maxAge: '30d' }));
 
   // Health check
   app.get('/api/health', (req, res) => {
@@ -120,6 +134,195 @@ async function startServer() {
         console.log(`[Master Catalog] Removed ${DATA_FILE}`);
       }
       return res.json({ success: true, message: 'Katalog zresetowany' });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // UPLOAD IMAGE DIRECTLY TO LOCAL /uploads FOLDER
+  app.post('/api/uploads/upload', (req, res) => {
+    try {
+      const { dataUrl, filename, brand, model, rowId } = req.body;
+      if (!dataUrl || typeof dataUrl !== 'string') {
+        return res.status(400).json({ success: false, error: 'Brak danych zdjęcia (dataUrl).' });
+      }
+
+      // Check if image is base64 dataUrl
+      const matches = dataUrl.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
+      let ext = 'jpg';
+      let buffer: Buffer;
+
+      if (matches && matches.length === 3) {
+        const mime = matches[1];
+        if (mime.includes('png')) ext = 'png';
+        else if (mime.includes('webp')) ext = 'webp';
+        else if (mime.includes('svg')) ext = 'svg';
+        else if (mime.includes('gif')) ext = 'gif';
+        buffer = Buffer.from(matches[2], 'base64');
+      } else if (dataUrl.startsWith('data:image/svg+xml')) {
+        ext = 'svg';
+        const svgContent = decodeURIComponent(dataUrl.replace('data:image/svg+xml;utf8,', ''));
+        buffer = Buffer.from(svgContent, 'utf-8');
+      } else {
+        return res.status(400).json({ success: false, error: 'Nierozpoznany format danych zdjęcia.' });
+      }
+
+      // Generate clean, safe filename
+      let safeBase = '';
+      if (brand || model) {
+        safeBase = `${brand || ''}_${model || ''}`.trim().toLowerCase().replace(/[^a-z0-9_-]+/gi, '_');
+      } else if (filename) {
+        safeBase = path.parse(filename).name.toLowerCase().replace(/[^a-z0-9_-]+/gi, '_');
+      }
+      if (!safeBase) safeBase = `foto_${rowId || 'auto'}`;
+
+      const finalFileName = `${safeBase}_${Date.now()}.${ext}`;
+      const targetPath = path.join(UPLOADS_DIR, finalFileName);
+      const publicTargetPath = path.join(PUBLIC_UPLOADS_DIR, finalFileName);
+
+      fs.writeFileSync(targetPath, buffer);
+      try {
+        fs.writeFileSync(publicTargetPath, buffer);
+      } catch (_) {}
+
+      console.log(`[Uploads] Saved image ${finalFileName} (${buffer.length} bytes) to program uploads/`);
+      return res.json({
+        success: true,
+        url: `/uploads/${finalFileName}`,
+        filename: finalFileName,
+        size: buffer.length,
+      });
+    } catch (err: any) {
+      console.error('[Uploads Error]:', err);
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // GET LIST OF ALL SAVED IMAGES IN /uploads
+  app.get('/api/uploads/list', (req, res) => {
+    try {
+      if (!fs.existsSync(UPLOADS_DIR)) {
+        return res.json({ success: true, files: [], totalCount: 0, totalBytes: 0 });
+      }
+      const fileNames = fs.readdirSync(UPLOADS_DIR);
+      let totalBytes = 0;
+      const files = fileNames.map((name) => {
+        const filePath = path.join(UPLOADS_DIR, name);
+        const stats = fs.statSync(filePath);
+        totalBytes += stats.size;
+        return {
+          name,
+          url: `/uploads/${name}`,
+          size: stats.size,
+          mtime: stats.mtime,
+        };
+      });
+
+      return res.json({
+        success: true,
+        files,
+        totalCount: files.length,
+        totalBytes,
+        totalSizeFormatted: `${(totalBytes / 1024 / 1024).toFixed(2)} MB`,
+      });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // MIGRATE ANY INLINE BASE64 IMAGES IN CATALOG TO PHYSICAL FILES IN /uploads
+  app.post('/api/uploads/migrate-base64', (req, res) => {
+    try {
+      if (!fs.existsSync(DATA_FILE)) {
+        return res.status(404).json({ success: false, error: 'Brak pliku bazy katalogu (data-catalog.json).' });
+      }
+      const raw = fs.readFileSync(DATA_FILE, 'utf-8');
+      const document = JSON.parse(raw);
+      if (!document || !Array.isArray(document.rows)) {
+        return res.status(400).json({ success: false, error: 'Nieprawidłowa struktura katalogu.' });
+      }
+
+      let migratedCount = 0;
+      for (const row of document.rows) {
+        if (row.imageUrl && typeof row.imageUrl === 'string' && row.imageUrl.startsWith('data:image/')) {
+          try {
+            const matches = row.imageUrl.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
+            if (matches && matches.length === 3) {
+              const mime = matches[1];
+              let ext = 'jpg';
+              if (mime.includes('png')) ext = 'png';
+              else if (mime.includes('webp')) ext = 'webp';
+
+              const cleanBrand = (row.brand || 'auto').toLowerCase().replace(/[^a-z0-9_-]+/gi, '_');
+              const cleanModel = (row.model || 'model').toLowerCase().replace(/[^a-z0-9_-]+/gi, '_');
+              const fileName = `lampa_${cleanBrand}_${cleanModel}_${row.id}.${ext}`;
+
+              const targetPath = path.join(UPLOADS_DIR, fileName);
+              const publicTargetPath = path.join(PUBLIC_UPLOADS_DIR, fileName);
+              const buffer = Buffer.from(matches[2], 'base64');
+
+              fs.writeFileSync(targetPath, buffer);
+              try { fs.writeFileSync(publicTargetPath, buffer); } catch (_) {}
+
+              row.imageUrl = `/uploads/${fileName}`;
+              migratedCount++;
+            }
+          } catch (migrateErr) {
+            console.warn(`Could not migrate image for row ${row.id}:`, migrateErr);
+          }
+        }
+      }
+
+      if (migratedCount > 0) {
+        fs.writeFileSync(DATA_FILE, JSON.stringify(document, null, 2), 'utf-8');
+        console.log(`[Uploads Migration] Migrated ${migratedCount} base64 images into physical /uploads files.`);
+      }
+
+      return res.json({
+        success: true,
+        migratedCount,
+        message: `Pomyślnie przeniesiono ${migratedCount} zdjęć do folderu /uploads.`,
+      });
+    } catch (err: any) {
+      console.error('[Uploads Migration Error]:', err);
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // GET PORTABLE ENVIRONMENT STATUS
+  app.get('/api/portable/info', (req, res) => {
+    try {
+      const dataFileSize = fs.existsSync(DATA_FILE) ? fs.statSync(DATA_FILE).size : 0;
+      const pricingFileSize = fs.existsSync(PRICING_SETTINGS_FILE) ? fs.statSync(PRICING_SETTINGS_FILE).size : 0;
+
+      let uploadsCount = 0;
+      let uploadsSizeBytes = 0;
+      if (fs.existsSync(UPLOADS_DIR)) {
+        const files = fs.readdirSync(UPLOADS_DIR);
+        uploadsCount = files.length;
+        for (const file of files) {
+          try {
+            uploadsSizeBytes += fs.statSync(path.join(UPLOADS_DIR, file)).size;
+          } catch (_) {}
+        }
+      }
+
+      return res.json({
+        success: true,
+        mode: 'W 100% Przenośny (Jeden Folder / Pendrive)',
+        programDirectory: process.cwd(),
+        dataFile: 'data-catalog.json',
+        dataFileSize,
+        pricingSettingsFile: 'pricing-settings.json',
+        pricingFileSize,
+        uploadsDirectory: 'uploads',
+        uploadsCount,
+        uploadsSizeBytes,
+        uploadsSizeFormatted: `${(uploadsSizeBytes / 1024 / 1024).toFixed(2)} MB`,
+        launcherFile: 'Uruchom_Cennik.bat',
+        isIsolated: true,
+        windowsFilesCreated: 0,
+      });
     } catch (err: any) {
       return res.status(500).json({ success: false, error: err.message });
     }
