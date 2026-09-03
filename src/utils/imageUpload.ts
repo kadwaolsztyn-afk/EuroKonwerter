@@ -110,6 +110,38 @@ export async function migrateCatalogImagesToUploadsFolder(): Promise<{
 }
 
 /**
+ * Forces synchronization of current catalog & photos into repository source files (src/ and public/)
+ * so that Google AI Studio & GitHub instantly recognize changes for commit/push.
+ */
+export async function syncDatabaseToSourceCode(document?: any): Promise<{
+  success: boolean;
+  message: string;
+  totalRows?: number;
+  error?: string;
+}> {
+  try {
+    const res = await fetch('/api/sync/to-source-code', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ document }),
+    });
+    const data = await res.json();
+    return {
+      success: Boolean(data.success),
+      message: data.message || 'Zsynchronizowano bazę.',
+      totalRows: data.totalRows,
+      error: data.error,
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      message: 'Błąd synchronizacji',
+      error: err.message || 'Nie udało się połączyć z serwerem.',
+    };
+  }
+}
+
+/**
  * Gets portable program storage status
  */
 export async function fetchPortableStatus(): Promise<PortableStatus | null> {

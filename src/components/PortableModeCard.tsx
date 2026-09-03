@@ -12,10 +12,14 @@ import {
   ExternalLink,
   ShieldCheck,
   RefreshCw,
+  GitBranch,
+  UploadCloud,
+  Sparkles,
 } from 'lucide-react';
 import {
   fetchPortableStatus,
   migrateCatalogImagesToUploadsFolder,
+  syncDatabaseToSourceCode,
   PortableStatus,
 } from '../utils/imageUpload';
 
@@ -24,6 +28,8 @@ export const PortableModeCard: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [isMigrating, setIsMigrating] = useState(false);
   const [migrationMessage, setMigrationMessage] = useState<string | null>(null);
+  const [isSyncingSource, setIsSyncingSource] = useState(false);
+  const [syncSourceMessage, setSyncSourceMessage] = useState<{ success: boolean; text: string } | null>(null);
 
   const loadStatus = async () => {
     setIsLoading(true);
@@ -38,6 +44,33 @@ export const PortableModeCard: React.FC = () => {
   useEffect(() => {
     loadStatus();
   }, []);
+
+  const handleSyncSourceCode = async () => {
+    setIsSyncingSource(true);
+    setSyncSourceMessage(null);
+    try {
+      const res = await syncDatabaseToSourceCode();
+      if (res.success) {
+        setSyncSourceMessage({
+          success: true,
+          text: 'Gotowe! Wszystkie nowe zdjęcia i wpisy zostały zsynchronizowane z plikami projektu (src/ i public/). Google AI Studio widzi teraz zmiany i możesz zrobić aktualizację na GitHub!',
+        });
+        loadStatus();
+      } else {
+        setSyncSourceMessage({
+          success: false,
+          text: `Błąd synchronizacji: ${res.error || 'Nieznany błąd'}`,
+        });
+      }
+    } catch (e: any) {
+      setSyncSourceMessage({
+        success: false,
+        text: `Błąd: ${e.message}`,
+      });
+    } finally {
+      setIsSyncingSource(false);
+    }
+  };
 
   const handleMigrate = async () => {
     setIsMigrating(true);
@@ -187,7 +220,38 @@ pause
         </div>
       </div>
 
-      {/* Action banner & tools */}
+      {/* Action banner 1: Synchronizacja ze studiem i GitHubem */}
+      <div className="bg-indigo-950/40 border border-indigo-500/30 rounded-xl p-4 mb-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+        <div className="space-y-1">
+          <div className="text-sm font-semibold text-white flex items-center gap-2">
+            <GitBranch className="w-4 h-4 text-indigo-400" />
+            Synchronizacja z Google AI Studio &amp; GitHub
+            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
+              Wymagane dla GitHub
+            </span>
+          </div>
+          <p className="text-xs text-slate-300 max-w-xl">
+            Zapisuje dodane zdjęcia oraz zmiany w modelach bezpośrednio do kodu źródłowego projektu (<code>src/data/initialCatalog.ts</code> oraz <code>public/data-catalog.json</code>). Dzięki temu Google AI Studio natychmiast wykrywa zmiany i pozwala na ich wysłanie na GitHub!
+          </p>
+          {syncSourceMessage && (
+            <p className={`text-xs font-semibold mt-1 flex items-center gap-1.5 ${syncSourceMessage.success ? 'text-emerald-300' : 'text-rose-400'}`}>
+              {syncSourceMessage.success ? <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-400" /> : <AlertCircle className="w-4 h-4 shrink-0 text-rose-400" />}
+              {syncSourceMessage.text}
+            </p>
+          )}
+        </div>
+
+        <button
+          onClick={handleSyncSourceCode}
+          disabled={isSyncingSource}
+          className="flex items-center justify-center gap-2 px-4 py-2.5 bg-gradient-to-r from-indigo-600 to-indigo-500 hover:from-indigo-500 hover:to-indigo-400 disabled:opacity-50 text-white rounded-xl text-xs font-bold shadow-lg shadow-indigo-900/40 transition shrink-0 cursor-pointer w-full sm:w-auto"
+        >
+          <UploadCloud className={`w-4 h-4 ${isSyncingSource ? 'animate-bounce' : ''}`} />
+          {isSyncingSource ? 'Synchronizowanie...' : 'Zsynchronizuj z AI Studio & GitHub'}
+        </button>
+      </div>
+
+      {/* Action banner 2: Optymalizacja zdjęć */}
       <div className="bg-slate-950/80 border border-slate-800/80 rounded-xl p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
         <div className="space-y-1">
           <div className="text-sm font-semibold text-white flex items-center gap-2">
@@ -206,7 +270,7 @@ pause
           <button
             onClick={handleMigrate}
             disabled={isMigrating}
-            className="flex-1 sm:flex-initial flex items-center justify-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white rounded-lg text-xs font-semibold shadow-lg shadow-emerald-900/30 transition"
+            className="flex-1 sm:flex-initial flex items-center justify-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white rounded-lg text-xs font-semibold shadow-lg shadow-emerald-900/30 transition cursor-pointer"
           >
             <FolderSync className={`w-3.5 h-3.5 ${isMigrating ? 'animate-spin' : ''}`} />
             {isMigrating ? 'Przenoszenie...' : 'Przenieś zdjęcia do /uploads'}
@@ -214,7 +278,7 @@ pause
 
           <button
             onClick={handleDownloadLauncher}
-            className="flex items-center justify-center gap-1.5 px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-medium transition"
+            className="flex items-center justify-center gap-1.5 px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-medium transition cursor-pointer"
             title="Pobierz plik uruchomieniowy Uruchom_Cennik.bat"
           >
             <Download className="w-3.5 h-3.5" />

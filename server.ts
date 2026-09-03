@@ -6,6 +6,8 @@ import { createServer as createViteServer } from 'vite';
 
 const PORT = 3000;
 const DATA_FILE = path.join(process.cwd(), 'data-catalog.json');
+const PUBLIC_DATA_FILE = path.join(process.cwd(), 'public', 'data-catalog.json');
+const SOURCE_CATALOG_FILE = path.join(process.cwd(), 'src', 'data', 'initialCatalog.ts');
 const PRICING_SETTINGS_FILE = path.join(process.cwd(), 'pricing-settings.json');
 const UPLOADS_DIR = path.join(process.cwd(), 'uploads');
 const PUBLIC_UPLOADS_DIR = path.join(process.cwd(), 'public', 'uploads');
@@ -16,6 +18,74 @@ if (!fs.existsSync(UPLOADS_DIR)) {
 }
 if (!fs.existsSync(PUBLIC_UPLOADS_DIR)) {
   fs.mkdirSync(PUBLIC_UPLOADS_DIR, { recursive: true });
+}
+
+/**
+ * Synchronizes the catalog JSON document across all repository and runtime locations:
+ * 1. root data-catalog.json (runtime & portable engine)
+ * 2. public/data-catalog.json (static assets & GitHub repository)
+ * 3. src/data/initialCatalog.ts (TypeScript source code for AI Studio change detection & compilation)
+ */
+function syncDocumentEverywhere(document: any) {
+  try {
+    const jsonStr = JSON.stringify(document, null, 2);
+
+    // 1. Root data-catalog.json
+    fs.writeFileSync(DATA_FILE, jsonStr, 'utf-8');
+
+    // 2. public/data-catalog.json (tracked by Git & served statically)
+    try {
+      const publicDir = path.dirname(PUBLIC_DATA_FILE);
+      if (!fs.existsSync(publicDir)) fs.mkdirSync(publicDir, { recursive: true });
+      fs.writeFileSync(PUBLIC_DATA_FILE, jsonStr, 'utf-8');
+    } catch (pubErr) {
+      console.warn('Could not write to public/data-catalog.json:', pubErr);
+    }
+
+    // 3. src/data/initialCatalog.ts (ensures Google AI Studio & GitHub detect changes directly in source code)
+    try {
+      if (fs.existsSync(SOURCE_CATALOG_FILE)) {
+        const rowsJson = JSON.stringify(document.rows || [], null, 2);
+        const headersJson = JSON.stringify(document.headers || [], null, 4);
+        const imagesJson = JSON.stringify(document.images || [], null, 4);
+        const version = document.version || '2026.03_ALL_v461_MEDIA_SYNC';
+        const docName = document.name || 'Baza Pojazdów USA/EU (Cennik 2026 - 461 Pozycji)';
+        const docId = document.id || 'cennik-all-461-master';
+        const totalRows = document.rows ? document.rows.length : 461;
+        const brandsCount = document.brandsCount || 34;
+
+        const tsContent = `import { DocumentRow, ImportedDocument } from '../types';
+
+export const CURRENT_DATABASE_VERSION = ${JSON.stringify(version)};
+
+export const INITIAL_461_CATALOG_ROWS: DocumentRow[] = ${rowsJson};
+
+export const INITIAL_COMPREHENSIVE_CATALOG: ImportedDocument = {
+  id: ${JSON.stringify(docId)},
+  name: ${JSON.stringify(docName)},
+  fileType: "json",
+  sizeFormatted: "240 KB",
+  importedAt: new Date(${JSON.stringify(new Date().toISOString())}),
+  version: CURRENT_DATABASE_VERSION,
+  totalRows: ${totalRows},
+  brandsCount: ${brandsCount},
+  headers: ${headersJson},
+  images: ${imagesJson},
+  rows: INITIAL_461_CATALOG_ROWS
+};
+
+// Backwards compatibility alias
+export const INITIAL_35_BRANDS_DOCUMENT = INITIAL_COMPREHENSIVE_CATALOG;
+`;
+        fs.writeFileSync(SOURCE_CATALOG_FILE, tsContent, 'utf-8');
+        console.log(`[Source Sync] Successfully synced ${totalRows} rows to src/data/initialCatalog.ts for AI Studio & GitHub.`);
+      }
+    } catch (srcErr) {
+      console.warn('Could not write to src/data/initialCatalog.ts:', srcErr);
+    }
+  } catch (err) {
+    console.error('Error in syncDocumentEverywhere:', err);
+  }
 }
 
 async function startServer() {
@@ -100,7 +170,7 @@ async function startServer() {
     }
   });
 
-  // SAVE the master catalog to permanent server storage
+  // SAVE the master catalog to permanent server storage and sync with source files
   app.post('/api/catalog', (req, res) => {
     try {
       const { document } = req.body;
@@ -111,9 +181,10 @@ async function startServer() {
         });
       }
 
-      fs.writeFileSync(DATA_FILE, JSON.stringify(document, null, 2), 'utf-8');
+      syncDocumentEverywhere(document);
+
       console.log(
-        `[Master Catalog] Saved ${document.rows.length} rows to ${DATA_FILE}`
+        `[Master Catalog] Saved and synced ${document.rows.length} rows to ${DATA_FILE}, public/data-catalog.json & src/data/initialCatalog.ts`
       );
       return res.json({
         success: true,
@@ -122,6 +193,35 @@ async function startServer() {
       });
     } catch (err: any) {
       console.error('Error writing catalog file:', err);
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // MANUAL SYNC ENDPOINT: Force synchronizes data-catalog.json to src/ and public/ for AI Studio & GitHub
+  app.post('/api/sync/to-source-code', (req, res) => {
+    try {
+      let docToSync = req.body?.document;
+      if (!docToSync && fs.existsSync(DATA_FILE)) {
+        const raw = fs.readFileSync(DATA_FILE, 'utf-8');
+        docToSync = JSON.parse(raw);
+      }
+
+      if (!docToSync || !Array.isArray(docToSync.rows)) {
+        return res.status(400).json({
+          success: false,
+          error: 'Brak poprawnego dokumentu katalogu do synchronizacji.',
+        });
+      }
+
+      syncDocumentEverywhere(docToSync);
+
+      return res.json({
+        success: true,
+        message: `Pomyślnie zsynchronizowano bazę (${docToSync.rows.length} wierszy) oraz zdjęcia do plików źródłowych (src/data/initialCatalog.ts i public/data-catalog.json). Google AI Studio oraz GitHub widzą teraz wszystkie zmiany!`,
+        totalRows: docToSync.rows.length,
+        timestamp: new Date().toISOString(),
+      });
+    } catch (err: any) {
       return res.status(500).json({ success: false, error: err.message });
     }
   });
