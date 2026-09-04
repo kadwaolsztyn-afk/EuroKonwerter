@@ -1,6 +1,6 @@
 import { DocumentRow, ImportedDocument } from '../types';
 
-export const CURRENT_DATABASE_VERSION = "2026.03_ALL_v461_SYNC_20260904_0943";
+export const CURRENT_DATABASE_VERSION = "2026.03_ALL_v461_SYNC_20260904_0947";
 
 export const INITIAL_461_CATALOG_ROWS: DocumentRow[] = [
   {
@@ -20304,7 +20304,7 @@ export const INITIAL_COMPREHENSIVE_CATALOG: ImportedDocument = {
   name: "sheet.html",
   fileType: "json",
   sizeFormatted: "320 KB",
-  importedAt: new Date("2026-09-04T07:43:32.856Z"),
+  importedAt: new Date("2026-09-04T07:47:14.939Z"),
   version: CURRENT_DATABASE_VERSION,
   totalRows: 461,
   brandsCount: 33,
