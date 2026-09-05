@@ -5,7 +5,7 @@ import {defineConfig} from 'vite';
 
 export default defineConfig(({ command }) => {
   return {
-    base: command === 'build' ? './' : '/',
+    base: process.env.ELECTRON_BUILD === 'true' ? './' : '/',
     plugins: [react(), tailwindcss()],
     resolve: {
       alias: {
@@ -13,7 +13,7 @@ export default defineConfig(({ command }) => {
       },
     },
     build: {
-      chunkSizeWarningLimit: 5000,
+      chunkSizeWarningLimit: 8000,
       rollupOptions: {
         output: {
           manualChunks(id) {

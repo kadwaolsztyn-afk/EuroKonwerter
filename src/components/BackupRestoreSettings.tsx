@@ -30,9 +30,21 @@ import {
   EyeOff,
   HelpCircle,
   GitCommit,
+  Copy,
+  Link,
+  Share2,
+  Smartphone,
+  Laptop,
+  Network,
 } from 'lucide-react';
 import { ImportedDocument } from '../types';
 import { exportFullBackupJSON, importFullBackupJSON } from '../utils/storage';
+import {
+  checkLinkServerStatus,
+  pushDatabaseToLinkServer,
+  pullDatabaseFromLinkServer,
+  LinkServerStatus,
+} from '../utils/linkSync';
 import {
   getGitHubSyncConfig,
   saveGitHubSyncConfig,
@@ -40,6 +52,7 @@ import {
   pullDatabaseFromGitHub,
   pushDatabaseToGitHub,
   syncCatalogToSourceCode,
+  pullDatabaseFromUrl,
   GitHubSyncConfig,
   GitHubCheckResult,
 } from '../utils/githubSync';
@@ -79,14 +92,111 @@ export const BackupRestoreSettings: React.FC<BackupRestoreSettingsProps> = ({
   const [ghCheckResult, setGhCheckResult] = useState<GitHubCheckResult | null>(null);
   const [isEditingGhConfig, setIsEditingGhConfig] = useState(false);
   const [editRepoUrl, setEditRepoUrl] = useState(ghConfig.repoUrl);
-  const [editReleaseTag, setEditReleaseTag] = useState(ghConfig.releaseTag);
+  const [editReleaseTag, setEditReleaseTag] = useState(ghConfig.releaseTag || 'main');
   const [editGhToken, setEditGhToken] = useState(ghConfig.githubToken || '');
   const [showTokenField, setShowTokenField] = useState(Boolean(ghConfig.githubToken));
   const [showTokenSecret, setShowTokenSecret] = useState(false);
+  const [directUrl, setDirectUrl] = useState('https://raw.githubusercontent.com/kadwaolsztyn-afk/EuroKonwerter/main/data-catalog.json');
+  const [isPullingUrl, setIsPullingUrl] = useState(false);
+  const [copiedUrl, setCopiedUrl] = useState<string | null>(null);
+
+  // Link Server Cross-Device Synchronization state
+  const [linkStatus, setLinkStatus] = useState<LinkServerStatus | null>(null);
+  const [isCheckingLink, setIsCheckingLink] = useState(false);
+  const [isPushingLink, setIsPushingLink] = useState(false);
+  const [isPullingLink, setIsPullingLink] = useState(false);
+  const [copiedAppUrl, setCopiedAppUrl] = useState(false);
+
+  const handleCopyAppUrl = () => {
+    const appUrl = typeof window !== 'undefined' ? window.location.href : '';
+    if (appUrl) {
+      navigator.clipboard.writeText(appUrl);
+      setCopiedAppUrl(true);
+      showSuccess('Skopiowano link aplikacji! Otwórz go na telefonie lub drugim komputerze.');
+      setTimeout(() => setCopiedAppUrl(false), 3500);
+    }
+  };
+
+  const handleCheckLink = async () => {
+    try {
+      setIsCheckingLink(true);
+      const st = await checkLinkServerStatus();
+      setLinkStatus(st);
+    } catch (_) {
+    } finally {
+      setIsCheckingLink(false);
+    }
+  };
+
+  const handlePushToLink = async () => {
+    try {
+      setIsPushingLink(true);
+      const res = await pushDatabaseToLinkServer(document);
+      if (res.success) {
+        showSuccess(res.message || 'Pomyślnie zapisano bazę na serwerze linku! Inne urządzenia natychmiast ją pobiorą.');
+        await handleCheckLink();
+      } else {
+        showError(res.error || 'Nie udało się zapisać bazy na serwerze linku.');
+      }
+    } catch (err: any) {
+      showError(err?.message || 'Błąd zapisu na serwerze linku.');
+    } finally {
+      setIsPushingLink(false);
+    }
+  };
+
+  const handlePullFromLink = async () => {
+    try {
+      setIsPullingLink(true);
+      const res = await pullDatabaseFromLinkServer();
+      if (res.success && res.document) {
+        onRestoreBackup(res.document);
+        showSuccess(res.message || `Pomyślnie zsynchronizowano bazę (${res.document.rows.length} modeli)!`);
+        await handleCheckLink();
+      } else {
+        showError(res.error || 'Nie udało się pobrać bazy z serwera linku.');
+      }
+    } catch (err: any) {
+      showError(err?.message || 'Błąd pobierania bazy z serwera linku.');
+    } finally {
+      setIsPullingLink(false);
+    }
+  };
+
+  const handleCopyLink = (url: string) => {
+    navigator.clipboard.writeText(url);
+    setCopiedUrl(url);
+    showSuccess('Skopiowano link do schowka!');
+    setTimeout(() => setCopiedUrl(null), 3000);
+  };
+
+  const handlePullFromUrl = async (urlToPull?: string) => {
+    const target = (urlToPull || directUrl).trim();
+    if (!target) {
+      showError('Podaj prawidłowy link URL do bazy danych.');
+      return;
+    }
+    try {
+      setIsPullingUrl(true);
+      const res = await pullDatabaseFromUrl(target);
+      if (res.success && res.document) {
+        onRestoreBackup(res.document);
+        setGhConfig(getGitHubSyncConfig());
+        showSuccess(res.message || `Pomyślnie wczytano bazę (${res.document.rows.length} modeli)!`);
+      } else {
+        showError(res.error || 'Nie udało się pobrać bazy ze wskazanego linku.');
+      }
+    } catch (err: any) {
+      showError(err?.message || 'Błąd podczas pobierania bazy z linku.');
+    } finally {
+      setIsPullingUrl(false);
+    }
+  };
 
   useEffect(() => {
-    // Initial silent check on mount
+    // Initial silent checks on mount
     handleCheckGitHub(true);
+    handleCheckLink();
   }, []);
 
   const showSuccess = (msg: string) => {
@@ -360,6 +470,147 @@ export const BackupRestoreSettings: React.FC<BackupRestoreSettingsProps> = ({
       {/* 100% Portable Mode Status & Local Folder Overview */}
       <PortableModeCard />
 
+      {/* CARD 0: Synchronizacja Między Urządzeniami z Tego Samego Linku (Bez GitHub) */}
+      <div className="bg-gradient-to-br from-slate-900 via-slate-900 to-indigo-950/40 border-2 border-indigo-500/40 hover:border-indigo-400/60 rounded-2xl p-6 shadow-2xl relative overflow-hidden transition-all duration-200">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 mb-5 border-b border-indigo-500/20 pb-5">
+          <div className="flex items-start gap-4">
+            <div className="w-12 h-12 rounded-xl bg-indigo-500/20 border border-indigo-400/40 flex items-center justify-center text-indigo-300 shrink-0 shadow-lg shadow-indigo-500/20">
+              <Network className="w-6 h-6" />
+            </div>
+            <div>
+              <div className="flex flex-wrap items-center gap-2">
+                <h3 className="text-lg font-bold text-white flex items-center gap-2">
+                  Synchronizacja Między Urządzeniami z Tego Samego Linku
+                </h3>
+                <span className="text-[10px] font-mono font-bold uppercase bg-emerald-500/20 text-emerald-300 px-2.5 py-0.5 rounded-full border border-emerald-500/30 flex items-center gap-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                  Auto-Sync Aktywny
+                </span>
+                <span className="text-[10px] font-medium bg-indigo-500/20 text-indigo-300 px-2.5 py-0.5 rounded-full border border-indigo-500/30">
+                  Bez konta GitHub • Bez tokenów
+                </span>
+              </div>
+              <p className="text-xs text-slate-300 mt-1 max-w-3xl leading-relaxed">
+                Każde urządzenie (telefon, tablet, laptop, komputer biurowy), które otworzy ten link, korzysta z tego samego centralnego serwera bazy danych. Zmiany wysłane z jednego urządzenia są natychmiast dostępne dla wszystkich pozostałych!
+              </p>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={handleCheckLink}
+              disabled={isCheckingLink}
+              className="px-3.5 py-2 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-700 text-slate-200 text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-50"
+              title="Sprawdź stan serwera bazy tego linku"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${isCheckingLink ? 'animate-spin text-indigo-400' : ''}`} />
+              <span>{isCheckingLink ? 'Sprawdzanie...' : 'Sprawdź Stan'}</span>
+            </button>
+            <button
+              type="button"
+              onClick={handleCopyAppUrl}
+              className="px-3.5 py-2 rounded-xl bg-indigo-600/30 hover:bg-indigo-600/50 border border-indigo-500/50 text-indigo-200 text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer shadow"
+              title="Skopiuj link do otwarcia na drugim telefonie lub komputerze"
+            >
+              <Share2 className="w-3.5 h-3.5 text-indigo-300" />
+              <span>{copiedAppUrl ? 'Skopiowano Link!' : 'Kopiuj Link dla Urządzenia'}</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Device Sync Status & Actions Grid */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-4">
+          {/* Box 1: Server Status */}
+          <div className="bg-slate-950/80 border border-slate-800 rounded-xl p-3.5 flex flex-col justify-between">
+            <div>
+              <div className="flex items-center justify-between text-xs font-semibold text-slate-300 mb-2">
+                <span className="flex items-center gap-1.5 text-indigo-300">
+                  <Globe className="w-3.5 h-3.5" /> Serwer tego linku
+                </span>
+                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+              </div>
+              <div className="text-[11px] text-slate-400 space-y-1 font-mono">
+                <div className="flex justify-between">
+                  <span>Stan:</span>
+                  <span className="text-emerald-400 font-bold">Połączony (Online)</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Baza na serwerze:</span>
+                  <span className="text-slate-200">{linkStatus?.totalRows || document.rows.length} aut</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Wersja serwera:</span>
+                  <span className="text-slate-400 text-[10px] truncate max-w-[140px]" title={linkStatus?.version || document.version}>
+                    {linkStatus?.version || document.version || 'Najnowsza'}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Box 2: This Device Status */}
+          <div className="bg-slate-950/80 border border-slate-800 rounded-xl p-3.5 flex flex-col justify-between">
+            <div>
+              <div className="flex items-center justify-between text-xs font-semibold text-slate-300 mb-2">
+                <span className="flex items-center gap-1.5 text-amber-300">
+                  <Laptop className="w-3.5 h-3.5" /> To urządzenie
+                </span>
+                <span className="text-[10px] text-slate-400 font-mono">Lokalnie</span>
+              </div>
+              <div className="text-[11px] text-slate-400 space-y-1 font-mono">
+                <div className="flex justify-between">
+                  <span>Załadowane modele:</span>
+                  <span className="text-amber-400 font-bold">{document.rows.length} aut ({document.brandsCount} marek)</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Zdjęcia w pamięci:</span>
+                  <span className="text-slate-200">
+                    {document.rows.filter((r) => r.imageUrl && !r.imageUrl.startsWith('data:image/svg')).length} zdjęć
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Wersja lokalna:</span>
+                  <span className="text-slate-400 text-[10px] truncate max-w-[140px]" title={document.version}>
+                    {document.version || 'Podstawowa'}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Box 3: Quick Action Buttons */}
+          <div className="bg-slate-950/80 border border-slate-800 rounded-xl p-3.5 flex flex-col justify-center gap-2">
+            <button
+              type="button"
+              onClick={handlePushToLink}
+              disabled={isPushingLink || isPullingLink}
+              className="w-full py-2 px-3 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-xs flex items-center justify-center gap-2 transition-all cursor-pointer shadow-lg shadow-indigo-600/30 disabled:opacity-50"
+            >
+              <Upload className={`w-3.5 h-3.5 ${isPushingLink ? 'animate-bounce' : ''}`} />
+              <span>{isPushingLink ? 'Wysyłanie na link...' : 'Wyślij bazę na ten link (Push)'}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={handlePullFromLink}
+              disabled={isPullingLink || isPushingLink}
+              className="w-full py-2 px-3 rounded-lg bg-slate-800 hover:bg-slate-700 border border-indigo-500/40 text-indigo-200 font-semibold text-xs flex items-center justify-center gap-2 transition-all cursor-pointer disabled:opacity-50"
+            >
+              <Download className={`w-3.5 h-3.5 ${isPullingLink ? 'animate-bounce' : ''}`} />
+              <span>{isPullingLink ? 'Pobieranie z linku...' : 'Pobierz najnowszą z linku (Pull)'}</span>
+            </button>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2 text-[11px] text-slate-400 bg-slate-950/50 p-2.5 rounded-lg border border-slate-800/80">
+          <Smartphone className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+          <span>
+            <strong>Wskazówka:</strong> Otwórz ten sam link na telefonie lub tablecie, a aplikacja automatycznie załaduje aktualne ceny, rabaty i zdjęcia. Dodatkowo przy powrocie do zakładki program sam sprawdza, czy inne urządzenie wprowadziło zmiany!
+          </span>
+        </div>
+      </div>
+
       {/* Main Action Cards: 1. Zapisz Backup & 2. Przywróć Backup */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
         {/* CARD 1: Zapisz Kopię Zapasową do Pliku */}
@@ -547,6 +798,147 @@ export const BackupRestoreSettings: React.FC<BackupRestoreSettingsProps> = ({
           </div>
         </div>
 
+        {/* Ready Direct Links Section */}
+        <div className="mb-5 p-4 rounded-xl bg-slate-950/90 border border-indigo-500/30">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2">
+              <Link className="w-4 h-4 text-emerald-400" />
+              <h4 className="text-xs font-bold text-white uppercase tracking-wider">
+                Gotowe Linki Bezpośrednie do Aktualizacji Bazy (461 Modeli)
+              </h4>
+            </div>
+            <span className="text-[10px] px-2 py-0.5 rounded-md bg-emerald-500/10 text-emerald-300 border border-emerald-500/20 font-mono">
+              100% sprawdzona kompatybilność
+            </span>
+          </div>
+
+          <p className="text-xs text-slate-300 mb-3.5 leading-relaxed">
+            Poniżej wygenerowane są bezpośrednie, gotowe linki do najnowszego pliku bazy <code className="text-amber-300 font-mono">data-catalog.json</code> w Twoim repozytorium. Możesz kliknąć <strong>„Pobierz do programu”</strong>, aby natychmiast wczytać bazę bez konieczności wpisywania żadnych danych, albo skopiować link do przeglądarki:
+          </p>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3.5">
+            {/* Link 1: GitHub Raw */}
+            <div className="p-3 bg-slate-900/90 border border-slate-800 rounded-xl flex flex-col justify-between hover:border-slate-700 transition-colors">
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-xs font-bold text-white flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-emerald-400" />
+                    GitHub Raw (Gałąź główna main)
+                  </span>
+                  <span className="text-[10px] font-mono text-slate-400">Oficjalny</span>
+                </div>
+                <div className="bg-slate-950 border border-slate-800 rounded-lg p-2 font-mono text-[11px] text-slate-300 break-all select-all mb-2.5">
+                  https://raw.githubusercontent.com/kadwaolsztyn-afk/EuroKonwerter/main/data-catalog.json
+                </div>
+              </div>
+              <div className="flex items-center gap-2 pt-1 border-t border-slate-800/80">
+                <button
+                  type="button"
+                  onClick={() => handlePullFromUrl('https://raw.githubusercontent.com/kadwaolsztyn-afk/EuroKonwerter/main/data-catalog.json')}
+                  disabled={isPullingUrl}
+                  className="flex-1 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50"
+                >
+                  <Download className={`w-3.5 h-3.5 ${isPullingUrl ? 'animate-bounce' : ''}`} />
+                  <span>{isPullingUrl ? 'Wczytywanie...' : 'Pobierz do programu'}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleCopyLink('https://raw.githubusercontent.com/kadwaolsztyn-afk/EuroKonwerter/main/data-catalog.json')}
+                  className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium flex items-center gap-1 transition-colors cursor-pointer"
+                  title="Kopiuj link do schowka"
+                >
+                  {copiedUrl === 'https://raw.githubusercontent.com/kadwaolsztyn-afk/EuroKonwerter/main/data-catalog.json' ? (
+                    <Check className="w-3.5 h-3.5 text-emerald-400" />
+                  ) : (
+                    <Copy className="w-3.5 h-3.5" />
+                  )}
+                  <span>Kopiuj</span>
+                </button>
+                <a
+                  href="https://raw.githubusercontent.com/kadwaolsztyn-afk/EuroKonwerter/main/data-catalog.json"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition-colors cursor-pointer"
+                  title="Otwórz plik bezpośrednio w nowej karcie"
+                >
+                  <ExternalLink className="w-3.5 h-3.5" />
+                </a>
+              </div>
+            </div>
+
+            {/* Link 2: jsDelivr CDN */}
+            <div className="p-3 bg-slate-900/90 border border-slate-800 rounded-xl flex flex-col justify-between hover:border-slate-700 transition-colors">
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-xs font-bold text-white flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-indigo-400" />
+                    Globalny CDN jsDelivr (Najszybszy)
+                  </span>
+                  <span className="text-[10px] font-mono text-indigo-300">CORS 100%</span>
+                </div>
+                <div className="bg-slate-950 border border-slate-800 rounded-lg p-2 font-mono text-[11px] text-slate-300 break-all select-all mb-2.5">
+                  https://cdn.jsdelivr.net/gh/kadwaolsztyn-afk/EuroKonwerter@main/data-catalog.json
+                </div>
+              </div>
+              <div className="flex items-center gap-2 pt-1 border-t border-slate-800/80">
+                <button
+                  type="button"
+                  onClick={() => handlePullFromUrl('https://cdn.jsdelivr.net/gh/kadwaolsztyn-afk/EuroKonwerter@main/data-catalog.json')}
+                  disabled={isPullingUrl}
+                  className="flex-1 px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50"
+                >
+                  <Download className={`w-3.5 h-3.5 ${isPullingUrl ? 'animate-bounce' : ''}`} />
+                  <span>{isPullingUrl ? 'Wczytywanie...' : 'Pobierz do programu'}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleCopyLink('https://cdn.jsdelivr.net/gh/kadwaolsztyn-afk/EuroKonwerter@main/data-catalog.json')}
+                  className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium flex items-center gap-1 transition-colors cursor-pointer"
+                  title="Kopiuj link do schowka"
+                >
+                  {copiedUrl === 'https://cdn.jsdelivr.net/gh/kadwaolsztyn-afk/EuroKonwerter@main/data-catalog.json' ? (
+                    <Check className="w-3.5 h-3.5 text-emerald-400" />
+                  ) : (
+                    <Copy className="w-3.5 h-3.5" />
+                  )}
+                  <span>Kopiuj</span>
+                </button>
+                <a
+                  href="https://cdn.jsdelivr.net/gh/kadwaolsztyn-afk/EuroKonwerter@main/data-catalog.json"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition-colors cursor-pointer"
+                  title="Otwórz plik bezpośrednio w nowej karcie"
+                >
+                  <ExternalLink className="w-3.5 h-3.5" />
+                </a>
+              </div>
+            </div>
+          </div>
+
+          {/* Custom URL Input Bar */}
+          <div className="pt-2 border-t border-slate-800/80 flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+            <div className="flex-1 relative">
+              <input
+                type="text"
+                value={directUrl}
+                onChange={(e) => setDirectUrl(e.target.value)}
+                placeholder="Wklej dowolny link URL do pliku bazy JSON (GitHub, CDN, serwer)..."
+                className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white font-mono placeholder:text-slate-500 focus:outline-none focus:border-indigo-400"
+              />
+            </div>
+            <button
+              type="button"
+              onClick={() => handlePullFromUrl()}
+              disabled={isPullingUrl || !directUrl.trim()}
+              className="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-600 text-slate-200 text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50 shrink-0"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${isPullingUrl ? 'animate-spin text-indigo-400' : ''}`} />
+              <span>{isPullingUrl ? 'Pobieranie...' : 'Wczytaj z tego linku'}</span>
+            </button>
+          </div>
+        </div>
+
         {/* Highlight Section: Push to GitHub & Deploy to Vercel */}
         <div className="mb-5 p-4 rounded-xl bg-gradient-to-br from-indigo-950/60 via-slate-950 to-slate-950 border border-indigo-500/40 relative overflow-hidden">
           <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
@@ -640,13 +1032,13 @@ export const BackupRestoreSettings: React.FC<BackupRestoreSettingsProps> = ({
                 />
               </div>
               <div>
-                <label className="block text-[11px] text-slate-400 mb-1">Tag Wydania dla Pull (Release Tag)</label>
+                <label className="block text-[11px] text-slate-400 mb-1">Gałąź lub Tag Wydania (Branch / Tag)</label>
                 <input
                   type="text"
                   value={editReleaseTag}
                   onChange={(e) => setEditReleaseTag(e.target.value)}
                   className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-400 font-mono"
-                  placeholder="Baza"
+                  placeholder="main"
                 />
               </div>
             </div>

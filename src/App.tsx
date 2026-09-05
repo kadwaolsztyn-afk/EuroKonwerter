@@ -15,6 +15,7 @@ import {
 import { mergeDocuments } from './utils/documentMerger';
 import { uploadImageToProgramFolder } from './utils/imageUpload';
 import { pushDatabaseToGitHub, getGitHubSyncConfig } from './utils/githubSync';
+import { checkLinkServerStatus, pullDatabaseFromLinkServer } from './utils/linkSync';
 import { Header } from './components/Header';
 import { SettingsView } from './components/SettingsView';
 import { ClientView } from './components/ClientView';
@@ -125,11 +126,53 @@ export default function App() {
     };
   }, []);
 
-  // Helper to update state and save to IndexedDB in one step
+  // Cross-device link sync: checks lightweight /api/catalog/status on focus and periodically
+  useEffect(() => {
+    let isCancelled = false;
+
+    async function checkForRemoteUpdates() {
+      if (!currentDocument || isCancelled) return;
+      try {
+        const status = await checkLinkServerStatus();
+        if (
+          status.exists &&
+          status.version &&
+          currentDocument.version &&
+          status.version !== currentDocument.version
+        ) {
+          console.log(
+            `[LinkSync] Newer catalog detected on shared link (${status.version} vs ${currentDocument.version}). Auto-syncing...`
+          );
+          const res = await pullDatabaseFromLinkServer();
+          if (res.success && res.document && !isCancelled) {
+            setCurrentDocument(res.document);
+            setIsSavedInMemory(true);
+            showNotification(`🔄 Zsynchronizowano bazę z serwerem linku (${res.document.rows.length} modeli)!`);
+          }
+        }
+      } catch (_) {}
+    }
+
+    const onFocus = () => {
+      checkForRemoteUpdates();
+    };
+
+    window.addEventListener('focus', onFocus);
+    const interval = setInterval(checkForRemoteUpdates, 25000);
+
+    return () => {
+      isCancelled = true;
+      window.removeEventListener('focus', onFocus);
+      clearInterval(interval);
+    };
+  }, [currentDocument?.version]);
+
+  // Helper to update state and save to IndexedDB and server in one step
   const updateAndPersistDocument = useCallback(async (updatedDoc: ImportedDocument) => {
     setCurrentDocument(updatedDoc);
     try {
       await saveDocumentToStorage(updatedDoc);
+      saveMasterCatalogToServer(updatedDoc).catch(() => {});
       setIsSavedInMemory(true);
     } catch (err) {
       console.error('Failed to persist document:', err);

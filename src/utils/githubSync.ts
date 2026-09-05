@@ -43,7 +43,7 @@ const DEFAULT_CONFIG: GitHubSyncConfig = {
   enabled: true,
   checkOnStartup: false,
   repoUrl: 'https://github.com/kadwaolsztyn-afk/EuroKonwerter',
-  releaseTag: 'Baza',
+  releaseTag: 'main',
   targetAssetFileName: 'data-catalog.json',
   lastChecked: null,
   lastSynced: null,
@@ -65,8 +65,8 @@ export function getGitHubSyncConfig(): GitHubSyncConfig {
       if (!parsed.repoUrl || parsed.repoUrl.includes('Konwerter-Usa-ECE')) {
         parsed.repoUrl = 'https://github.com/kadwaolsztyn-afk/EuroKonwerter';
       }
-      if (!parsed.releaseTag || parsed.releaseTag === 'Konwerter' || parsed.releaseTag === 'Backup') {
-        parsed.releaseTag = 'Baza';
+      if (!parsed.releaseTag || parsed.releaseTag === 'Konwerter' || parsed.releaseTag === 'Backup' || parsed.releaseTag === 'Baza') {
+        parsed.releaseTag = 'main';
       }
       return { ...DEFAULT_CONFIG, ...parsed };
     }
@@ -257,7 +257,7 @@ export async function pullDatabaseFromGitHub(customConfig?: Partial<GitHubSyncCo
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ config }),
-    }, 8000);
+    }, 35000);
 
     const contentType = response.headers.get('content-type') || '';
     if (response.ok && contentType.includes('application/json')) {
@@ -321,6 +321,13 @@ export async function pullDatabaseFromGitHub(customConfig?: Partial<GitHubSyncCo
 
     // Prioritized list of reliable download candidate URLs
     const candidateUrls: string[] = [
+      // Fast, direct GitHub Raw on main branch (default primary location)
+      `https://raw.githubusercontent.com/${owner}/${repo}/main/${config.targetAssetFileName || 'data-catalog.json'}?t=${timestamp}`,
+      `https://cdn.jsdelivr.net/gh/${owner}/${repo}@main/${config.targetAssetFileName || 'data-catalog.json'}?t=${timestamp}`,
+      `https://raw.githubusercontent.com/${owner}/${repo}/main/backup.json?t=${timestamp}`,
+      `https://raw.githubusercontent.com/${owner}/${repo}/main/baza.json?t=${timestamp}`,
+      `https://cdn.jsdelivr.net/gh/${owner}/${repo}@main/backup.json?t=${timestamp}`,
+
       // Direct release asset URL via CORS Proxies (bypasses GitHub Releases browser redirect CORS block)
       ...(releaseAssetDirectUrl
         ? [
@@ -330,14 +337,11 @@ export async function pullDatabaseFromGitHub(customConfig?: Partial<GitHubSyncCo
           ]
         : []),
 
-      // Direct releases download via CORS Proxies for tag Baza
+      // Direct releases download via CORS Proxies
       `https://corsproxy.io/?url=${encodeURIComponent(`https://github.com/${owner}/${repo}/releases/download/${tag}/data-catalog.json`)}`,
       `https://api.allorigins.win/raw?url=${encodeURIComponent(`https://github.com/${owner}/${repo}/releases/download/${tag}/data-catalog.json`)}`,
       `https://corsproxy.io/?url=${encodeURIComponent(`https://github.com/${owner}/${repo}/releases/download/${tag}/backup.json`)}`,
       `https://corsproxy.io/?url=${encodeURIComponent(`https://github.com/${owner}/${repo}/releases/download/${tag}/baza.json`)}`,
-      `https://corsproxy.io/?url=${encodeURIComponent(`https://github.com/${owner}/${repo}/releases/download/${tag}/cennik.json`)}`,
-      `https://corsproxy.io/?url=${encodeURIComponent(`https://github.com/${owner}/${repo}/releases/download/Baza/data-catalog.json`)}`,
-      `https://corsproxy.io/?url=${encodeURIComponent(`https://github.com/${owner}/${repo}/releases/download/Baza/backup.json`)}`,
 
       // jsDelivr CDN mirrors (100% CORS enabled, fastest worldwide edge CDN)
       `https://cdn.jsdelivr.net/gh/${owner}/${repo}@${tag}/data-catalog.json?t=${timestamp}`,
@@ -379,7 +383,7 @@ export async function pullDatabaseFromGitHub(customConfig?: Partial<GitHubSyncCo
 
     for (const url of candidateUrls) {
       try {
-        const res = await fetchWithTimeout(url, { cache: 'no-store' }, 6000);
+        const res = await fetchWithTimeout(url, { cache: 'no-store' }, 35000);
         if (res.ok) {
           const text = await res.text();
           if (text && (text.trim().startsWith('{') || text.trim().startsWith('['))) {
@@ -661,63 +665,116 @@ export const INITIAL_35_BRANDS_DOCUMENT = INITIAL_COMPREHENSIVE_CATALOG;
 }
 
 /**
- * Updates or creates a file in GitHub repository using GitHub Contents REST API
+ * Commits multiple files atomically using GitHub Git Data API (Blobs, Trees, Commits, Refs).
+ * Completely bypasses the 1MB file limit of GitHub Contents API (supports up to 100MB!).
  */
-async function updateGitHubFileViaApi(
+async function commitFilesViaGitDataApi(
   owner: string,
   repo: string,
-  filePath: string,
-  contentStr: string,
+  branch: string,
+  files: Array<{ path: string; content: string }>,
   token: string,
-  commitMessage: string,
-  branch = 'main'
-): Promise<{ success: boolean; error?: string; sha?: string }> {
+  commitMessage: string
+): Promise<{ success: boolean; sha?: string; error?: string }> {
   const cleanToken = token.trim();
   const headers: Record<string, string> = {
     Accept: 'application/vnd.github.v3+json',
     Authorization: cleanToken.startsWith('Bearer ') || cleanToken.startsWith('token ') ? cleanToken : `Bearer ${cleanToken}`,
+    'Content-Type': 'application/json',
   };
 
-  // 1. Check current SHA
-  let currentSha: string | undefined;
   try {
-    const checkRes = await fetch(
-      `https://api.github.com/repos/${owner}/${repo}/contents/${filePath}?ref=${branch}`,
-      { headers }
-    );
-    if (checkRes.ok) {
-      const checkData = await checkRes.json();
-      currentSha = checkData.sha;
+    // 1. Get latest commit SHA on branch
+    const refRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/git/refs/heads/${branch}`, { headers });
+    if (!refRes.ok) {
+      const err = await refRes.json().catch(() => ({}));
+      return { success: false, error: `Nie można pobrać gałęzi ${branch}: ${err.message || refRes.statusText}` };
     }
-  } catch (_) {}
+    const refData = await refRes.json();
+    const latestCommitSha = refData.object.sha;
 
-  // 2. Put file to GitHub
-  const base64Content = encodeBase64Utf8(contentStr);
-  const putRes = await fetch(
-    `https://api.github.com/repos/${owner}/${repo}/contents/${filePath}`,
-    {
-      method: 'PUT',
-      headers: {
-        ...headers,
-        'Content-Type': 'application/json',
-      },
+    // 2. Get base tree SHA from latest commit
+    const commitRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/git/commits/${latestCommitSha}`, { headers });
+    if (!commitRes.ok) {
+      const err = await commitRes.json().catch(() => ({}));
+      return { success: false, error: `Nie można pobrać commita: ${err.message || commitRes.statusText}` };
+    }
+    const commitData = await commitRes.json();
+    const baseTreeSha = commitData.tree.sha;
+
+    // 3. Create blobs for each file
+    const treeItems = [];
+    for (const file of files) {
+      const blobRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/git/blobs`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          content: encodeBase64Utf8(file.content),
+          encoding: 'base64',
+        }),
+      });
+      if (!blobRes.ok) {
+        const err = await blobRes.json().catch(() => ({}));
+        return { success: false, error: `Błąd tworzenia blobu dla ${file.path}: ${err.message || blobRes.statusText}` };
+      }
+      const blobData = await blobRes.json();
+      treeItems.push({
+        path: file.path,
+        mode: '100644',
+        type: 'blob',
+        sha: blobData.sha,
+      });
+    }
+
+    // 4. Create new tree
+    const newTreeRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/git/trees`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        base_tree: baseTreeSha,
+        tree: treeItems,
+      }),
+    });
+    if (!newTreeRes.ok) {
+      const err = await newTreeRes.json().catch(() => ({}));
+      return { success: false, error: `Błąd tworzenia drzewa git: ${err.message || newTreeRes.statusText}` };
+    }
+    const newTreeData = await newTreeRes.json();
+
+    // 5. Create new commit
+    const newCommitRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/git/commits`, {
+      method: 'POST',
+      headers,
       body: JSON.stringify({
         message: commitMessage,
-        content: base64Content,
-        sha: currentSha,
-        branch,
+        tree: newTreeData.sha,
+        parents: [latestCommitSha],
       }),
+    });
+    if (!newCommitRes.ok) {
+      const err = await newCommitRes.json().catch(() => ({}));
+      return { success: false, error: `Błąd tworzenia commita: ${err.message || newCommitRes.statusText}` };
     }
-  );
+    const newCommitData = await newCommitRes.json();
 
-  if (!putRes.ok) {
-    const errData = await putRes.json().catch(() => ({}));
-    const message = errData.message || `HTTP ${putRes.status} ${putRes.statusText}`;
-    return { success: false, error: message };
+    // 6. Update reference on branch
+    const updateRefRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/git/refs/heads/${branch}`, {
+      method: 'PATCH',
+      headers,
+      body: JSON.stringify({
+        sha: newCommitData.sha,
+        force: true,
+      }),
+    });
+    if (!updateRefRes.ok) {
+      const err = await updateRefRes.json().catch(() => ({}));
+      return { success: false, error: `Błąd aktualizacji gałęzi ${branch}: ${err.message || updateRefRes.statusText}` };
+    }
+
+    return { success: true, sha: newCommitData.sha };
+  } catch (err: any) {
+    return { success: false, error: err?.message || 'Błąd API GitHub' };
   }
-
-  const resData = await putRes.json().catch(() => ({}));
-  return { success: true, sha: resData?.commit?.sha };
 }
 
 /**
@@ -771,33 +828,85 @@ export async function pushDatabaseToGitHub(
   const jsonStr = JSON.stringify(docWithVersion, null, 2);
   const tsStr = generateInitialCatalogTs(docWithVersion, version);
 
+  // 1. First, attempt high-performance server push with native Git and all photos in public/uploads/
+  try {
+    const serverRes = await fetch('/api/sync/github/push', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        document: docWithVersion,
+        token: authToken,
+        repoUrl: config.repoUrl,
+        commitMessage: commitMsg,
+        branch: 'main',
+      }),
+    });
+
+    if (serverRes.ok) {
+      const data = await serverRes.json();
+      if (data && data.success) {
+        // Update local config
+        await saveGitHubSyncConfig({
+          lastPushed: now.toISOString(),
+          lastSynced: now.toISOString(),
+          lastVersion: data.version || version,
+          lastTotalRows: docWithVersion.rows.length,
+          githubToken: authToken,
+        });
+
+        // Sync to local client storage
+        await saveDocumentToStorage(docWithVersion);
+
+        return {
+          success: true,
+          message: data.message || `Pomyślnie wysłano zaktualizowaną bazę oraz zdjęcia do GitHub! Vercel automatycznie rozpoczął wdrażanie.`,
+          commitSha: data.commitSha,
+          version: data.version || version,
+        };
+      } else if (data && data.error) {
+        return {
+          success: false,
+          error: data.error,
+        };
+      }
+    } else {
+      const errData = await serverRes.json().catch(() => ({}));
+      if (errData && errData.error) {
+        return {
+          success: false,
+          error: errData.error,
+        };
+      }
+    }
+  } catch (serverErr) {
+    console.warn('[GitHub Sync] Server push endpoint unreachable, falling back to direct API:', serverErr);
+  }
+
+  // 2. Direct client fallback via GitHub Git Data API (Blobs, Trees, Commits) - works up to 100MB!
   const filesToPush = [
     { path: 'public/data-catalog.json', content: jsonStr },
     { path: 'data-catalog.json', content: jsonStr },
     { path: 'src/data/initialCatalog.ts', content: tsStr },
   ];
 
-  const pushedFiles: string[] = [];
-  let lastCommitSha: string | undefined;
+  const gitRes = await commitFilesViaGitDataApi(
+    parsedRepo.owner,
+    parsedRepo.repo,
+    'main',
+    filesToPush,
+    authToken,
+    commitMsg
+  );
 
-  for (const f of filesToPush) {
-    const res = await updateGitHubFileViaApi(
-      parsedRepo.owner,
-      parsedRepo.repo,
-      f.path,
-      f.content,
-      authToken,
-      commitMsg
-    );
-    if (!res.success) {
-      return {
-        success: false,
-        error: `Błąd podczas wysyłania ${f.path}: ${res.error}`,
-      };
-    }
-    pushedFiles.push(f.path);
-    if (res.sha) lastCommitSha = res.sha;
+  if (!gitRes.success) {
+    return {
+      success: false,
+      error: gitRes.error || 'Błąd podczas wysyłania plików do Git Data API.',
+    };
   }
+
+  const pushedFiles = filesToPush.map((f) => f.path);
+  const lastCommitSha = gitRes.sha;
 
   // Update local config
   await saveGitHubSyncConfig({
@@ -808,8 +917,15 @@ export async function pushDatabaseToGitHub(
     ...(token ? { githubToken: token } : {}),
   });
 
-  // Sync to local client storage & local dev server if available
+  // Sync to local client storage & local link server
   await saveDocumentToStorage(docWithVersion);
+  try {
+    await fetch('/api/catalog', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ document: docWithVersion }),
+    });
+  } catch (_) {}
 
   return {
     success: true,
@@ -850,6 +966,94 @@ export async function syncCatalogToSourceCode(document: ImportedDocument): Promi
     return {
       success: false,
       error: err?.message || 'Błąd połączenia z lokalnym serwerem dev.',
+    };
+  }
+}
+
+/**
+ * Downloads and applies database from any direct URL (GitHub raw, CDN, etc.)
+ */
+export async function pullDatabaseFromUrl(targetUrl: string): Promise<{
+  success: boolean;
+  document?: ImportedDocument;
+  message?: string;
+  error?: string;
+}> {
+  try {
+    const res = await fetch('/api/sync/url', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: targetUrl }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (data && data.success && data.document) {
+        const doc = data.document as ImportedDocument;
+        if (doc.importedAt && typeof doc.importedAt === 'string') {
+          doc.importedAt = new Date(doc.importedAt);
+        }
+        await saveDocumentToStorage(doc);
+        saveGitHubSyncConfig({
+          lastSynced: new Date().toISOString(),
+          lastTotalRows: doc.rows.length,
+          lastVersion: 'URL_SYNC',
+        });
+        return {
+          success: true,
+          document: doc,
+          message: data.message || `Pomyślnie pobrano i wczytano bazę (${doc.rows.length} modeli)!`,
+        };
+      }
+    }
+    // Direct client fetch fallback
+    const directRes = await fetchWithTimeout(targetUrl, { cache: 'no-store' }, 45000);
+    if (!directRes.ok) {
+      throw new Error(`Błąd pobierania (${directRes.status}): ${directRes.statusText}`);
+    }
+    const parsed = await directRes.json();
+    let docToSave: ImportedDocument | null = null;
+    if (parsed && Array.isArray(parsed.rows)) {
+      docToSave = parsed;
+    } else if (parsed && parsed.document && Array.isArray(parsed.document.rows)) {
+      docToSave = parsed.document;
+    } else if (Array.isArray(parsed)) {
+      docToSave = {
+        id: `doc-url-${Date.now()}`,
+        name: 'Katalog z bezpośredniego linku',
+        fileType: 'json',
+        sizeFormatted: 'OK',
+        importedAt: new Date(),
+        totalRows: parsed.length,
+        brandsCount: new Set(parsed.map((r: any) => r.brand)).size,
+        rows: parsed,
+        images: [],
+        headers: ['Lp.', 'Marka', 'Model', 'Generacja / Kod', 'Roczniki', 'Cena Stat. Klient', 'Cena Dyn. Klient'],
+      };
+    }
+    if (docToSave) {
+      await saveDocumentToStorage(docToSave);
+      await syncCatalogToSourceCode(docToSave);
+      try {
+        await fetch('/api/catalog', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ document: docToSave }),
+        });
+      } catch (_) {}
+      return {
+        success: true,
+        document: docToSave,
+        message: `Pomyślnie pobrano i zapisano bazę (${docToSave.rows.length} modeli)!`,
+      };
+    }
+    return {
+      success: false,
+      error: 'Plik nie zawiera poprawnej struktury katalogu.',
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      error: err?.message || 'Błąd podczas pobierania bazy z linku.',
     };
   }
 }

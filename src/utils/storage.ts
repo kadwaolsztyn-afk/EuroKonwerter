@@ -38,8 +38,7 @@ function mergeWithInitialCatalog(doc: ImportedDocument): ImportedDocument {
     );
     const localNeedsPhoto = Boolean(
       !row.imageUrl ||
-      row.imageUrl.startsWith('data:image/svg') ||
-      row.imageUrl.startsWith('/uploads/')
+      row.imageUrl.startsWith('data:image/svg')
     );
 
     return {
@@ -161,8 +160,12 @@ export async function saveMasterCatalogToServer(document: ImportedDocument): Pro
 export async function fetchMasterCatalogFromServer(): Promise<ImportedDocument | null> {
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 4000);
-    const response = await fetch('/api/catalog', {
+    const timeoutId = setTimeout(() => controller.abort(), 35000);
+    const response = await fetch('/api/catalog?t=' + Date.now(), {
+      headers: {
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        Pragma: 'no-cache',
+      },
       signal: controller.signal,
     });
     clearTimeout(timeoutId);
@@ -488,10 +491,11 @@ export function sanitizeDocumentRows(rows: DocumentRow[]): DocumentRow[] {
  * 5. Returns unified 35 brands / 266 models catalog
  */
 export async function loadDocumentFromStorage(): Promise<ImportedDocument | null> {
-  // 1. Check local IndexedDB first
+  // 1. Check local IndexedDB first for instant rendering
+  let localDoc: ImportedDocument | null = null;
   try {
     const db = await openDB();
-    const localDoc = await new Promise<ImportedDocument | null>((resolve) => {
+    localDoc = await new Promise<ImportedDocument | null>((resolve) => {
       const transaction = db.transaction([STORE_NAME], 'readonly');
       const store = transaction.objectStore(STORE_NAME);
       const request = store.get(DOCUMENT_KEY);
@@ -513,23 +517,57 @@ export async function loadDocumentFromStorage(): Promise<ImportedDocument | null
         resolve(null);
       };
     });
-
-    if (localDoc && localDoc.rows && localDoc.rows.length > 0) {
-      if (!isDocumentOutdated(localDoc)) {
-        return localDoc;
-      }
-      console.log('Migrating local storage from outdated version to unified version:', CURRENT_DATABASE_VERSION);
-      if (localDoc.rows.length >= 460) {
-        const upgraded = mergeWithInitialCatalog(localDoc);
-        await saveDocumentToStorage(upgraded);
-        return upgraded;
-      }
-    }
   } catch (err) {
     console.warn('Notice: IndexedDB read fallback to localStorage:', err);
   }
 
-  // 2. Check server master catalog first when online to guarantee cross-device parity
+  // 2. Check if the shared link server has an updated version across devices
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 2500);
+    const statusRes = await fetch('/api/catalog/status', {
+      headers: { 'Cache-Control': 'no-cache' },
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+
+    if (statusRes.ok) {
+      const statusData = await statusRes.json();
+      const serverVersion = statusData.version;
+      const localVersion = localDoc?.version;
+
+      // If server has a saved catalog and either local is missing/small or server has a different version
+      if (
+        statusData.exists &&
+        (!localDoc || localDoc.rows.length < 460 || (serverVersion && serverVersion !== localVersion))
+      ) {
+        console.log(
+          `[Link Sync] Server has newer/different catalog (${serverVersion} vs ${localVersion}). Downloading latest version from link...`
+        );
+        const serverDoc = await fetchMasterCatalogFromServer();
+        if (serverDoc && serverDoc.rows && serverDoc.rows.length >= 460) {
+          await saveDocumentToStorage(serverDoc);
+          return serverDoc;
+        }
+      }
+    }
+  } catch {
+    // Offline or server not reachable in 2.5s, fall back seamlessly to local
+  }
+
+  if (localDoc && localDoc.rows && localDoc.rows.length > 0) {
+    if (!isDocumentOutdated(localDoc)) {
+      return localDoc;
+    }
+    console.log('Migrating local storage from outdated version to unified version:', CURRENT_DATABASE_VERSION);
+    if (localDoc.rows.length >= 460) {
+      const upgraded = mergeWithInitialCatalog(localDoc);
+      await saveDocumentToStorage(upgraded);
+      return upgraded;
+    }
+  }
+
+  // 3. Check server master catalog if local was absent
   try {
     const serverDoc = await fetchMasterCatalogFromServer();
     if (serverDoc && serverDoc.rows && serverDoc.rows.length >= 460) {
@@ -540,7 +578,7 @@ export async function loadDocumentFromStorage(): Promise<ImportedDocument | null
     console.warn('Server catalog fetch error or offline:', err);
   }
 
-  // 3. Check local synchronous storage fallback if not outdated
+  // 4. Check local synchronous storage fallback if not outdated
   try {
     const raw = localStorage.getItem(MASTER_CACHE_KEY) || localStorage.getItem(SNAPSHOT_KEY);
     if (raw) {
@@ -564,7 +602,7 @@ export async function loadDocumentFromStorage(): Promise<ImportedDocument | null
     console.warn('Notice: localStorage read fallback to server/defaults:', err);
   }
 
-  // 4. Default fallback: Save and return the master 266 models catalog
+  // 5. Default fallback: Save and return the master 266 models catalog
   try {
     await saveDocumentToStorage(INITIAL_35_BRANDS_DOCUMENT);
   } catch (_) {}

@@ -96,9 +96,9 @@ export async function uploadImageToProgramFolder(
     }
   }
 
-  // Backup to server's /uploads folder if running with backend
+  // Upload to server's /uploads folder if running with backend
   try {
-    fetch('/api/uploads/upload', {
+    const res = await fetch('/api/uploads/upload', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -110,10 +110,16 @@ export async function uploadImageToProgramFolder(
         brand: options?.brand,
         model: options?.model,
       }),
-    }).catch(() => {});
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (data && data.url) {
+        return data.url;
+      }
+    }
   } catch (_) {}
 
-  // Return the self-contained dataUrl so that it renders everywhere (Vercel, GitHub, offline)
+  // Return the dataUrl as fallback if offline or server is unavailable
   return dataUrl;
 }
 
