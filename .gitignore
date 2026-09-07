@@ -1,0 +1,12 @@
+dist/
+dist-ssr/
+node_modules/
+build/
+coverage/
+/uploads/
+!public/uploads/
+.DS_Store
+*.log
+.env*
+!.env.example
+.github/
