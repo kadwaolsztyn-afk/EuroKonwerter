@@ -1,6 +1,6 @@
 import { DocumentRow, ImportedDocument } from '../types';
 
-export const CURRENT_DATABASE_VERSION = "2026.03_ALL_v461_SYNC_20260907_1115";
+export const CURRENT_DATABASE_VERSION = "2026.03_ALL_v461_SYNC_20260907_1208";
 
 export const INITIAL_461_CATALOG_ROWS: DocumentRow[] = [
   {
@@ -3936,7 +3936,7 @@ export const INITIAL_461_CATALOG_ROWS: DocumentRow[] = [
     "multimediaVersion": "",
     "multimediaPriceClient": "",
     "multimediaPriceBroker": "",
-    "multimediaImageUrl": "/uploads/multimedia_bmw_seria_5_89.webp",
+    "multimediaImageUrl": "",
     "multimediaNotes": ""
   },
   {
@@ -20319,7 +20319,7 @@ export const INITIAL_COMPREHENSIVE_CATALOG: ImportedDocument = {
   name: "sheet.html",
   fileType: "json",
   sizeFormatted: "320 KB",
-  importedAt: new Date("2026-09-07T09:15:23.420Z"),
+  importedAt: new Date("2026-09-07T10:08:51.776Z"),
   version: CURRENT_DATABASE_VERSION,
   totalRows: 461,
   brandsCount: 33,
