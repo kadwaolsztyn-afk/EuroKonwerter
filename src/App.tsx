@@ -14,7 +14,7 @@ import {
 } from './utils/storage';
 import { mergeDocuments } from './utils/documentMerger';
 import { uploadImageToProgramFolder } from './utils/imageUpload';
-import { pushDatabaseToGitHub, getGitHubSyncConfig } from './utils/githubSync';
+import { pushDatabaseToGitHub, getGitHubSyncConfig, pullDatabaseFromGitHub } from './utils/githubSync';
 import { checkLinkServerStatus, pullDatabaseFromLinkServer } from './utils/linkSync';
 import { Header } from './components/Header';
 import { SettingsView } from './components/SettingsView';
@@ -103,7 +103,7 @@ export default function App() {
     showNotification('Dostęp chroniony został zablokowany');
   };
 
-  // 1. Initial Load from local storage (NO auto-sync on startup/online/focus)
+  // 1. Initial Load from local storage and automatic GitHub download if enabled in settings
   useEffect(() => {
     let isCancelled = false;
 
@@ -114,6 +114,22 @@ export default function App() {
           setCurrentDocument(savedDoc);
           setIsSavedInMemory(true);
         }
+
+        // Automatic GitHub sync on startup if enabled in settings ("ptaszek w okienku ustawień")
+        const ghCfg = getGitHubSyncConfig();
+        if (ghCfg.enabled && ghCfg.checkOnStartup && !isCancelled) {
+          try {
+            console.log('[App Startup] checkOnStartup is active, fetching latest database from GitHub...');
+            const pullRes = await pullDatabaseFromGitHub(ghCfg);
+            if (pullRes.success && pullRes.document && !isCancelled) {
+              setCurrentDocument(pullRes.document);
+              setIsSavedInMemory(true);
+              showNotification(`🔄 Automatycznie zaktualizowano bazę z GitHub (${pullRes.document.rows.length} modeli)!`);
+            }
+          } catch (ghErr) {
+            console.warn('[App Startup] Automatic GitHub download failed:', ghErr);
+          }
+        }
       } catch (err) {
         console.error('Error reading catalog storage:', err);
       }
@@ -121,8 +137,23 @@ export default function App() {
 
     initCatalogFromStorage();
 
+    const handleOnline = () => {
+      const ghCfg = getGitHubSyncConfig();
+      if (ghCfg.enabled && ghCfg.checkOnStartup && !isCancelled) {
+        pullDatabaseFromGitHub(ghCfg).then((pullRes) => {
+          if (pullRes.success && pullRes.document && !isCancelled) {
+            setCurrentDocument(pullRes.document);
+            setIsSavedInMemory(true);
+            showNotification(`🔄 Zsynchronizowano najnowszą bazę z GitHub (${pullRes.document.rows.length} modeli)!`);
+          }
+        }).catch(() => {});
+      }
+    };
+    window.addEventListener('online', handleOnline);
+
     return () => {
       isCancelled = true;
+      window.removeEventListener('online', handleOnline);
     };
   }, []);
 

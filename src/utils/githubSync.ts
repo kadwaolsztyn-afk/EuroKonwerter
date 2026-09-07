@@ -68,7 +68,7 @@ export function getGitHubSyncConfig(): GitHubSyncConfig {
       if (!parsed.releaseTag || parsed.releaseTag === 'Konwerter' || parsed.releaseTag === 'Backup' || parsed.releaseTag === 'Baza') {
         parsed.releaseTag = 'main';
       }
-      return { ...DEFAULT_CONFIG, ...parsed };
+      return { ...DEFAULT_CONFIG, ...parsed, releaseTag: parsed.releaseTag || 'main' };
     }
   } catch (e) {
     console.warn('Failed to parse saved github config:', e);
@@ -165,7 +165,7 @@ export async function checkGitHubReleaseUpdates(): Promise<GitHubCheckResult> {
       };
     }
 
-    const tag = encodeURIComponent(config.releaseTag || 'Baza');
+    const tag = encodeURIComponent(config.releaseTag && config.releaseTag !== 'Baza' ? config.releaseTag : 'main');
     const releaseApiUrl = `https://api.github.com/repos/${parsedRepo.owner}/${parsedRepo.repo}/releases/tags/${tag}`;
 
     let releaseData: any = null;
@@ -193,13 +193,14 @@ export async function checkGitHubReleaseUpdates(): Promise<GitHubCheckResult> {
       const parsedRes = parseGitHubReleaseResponse(releaseData, config);
       saveGitHubSyncConfig({
         lastChecked: new Date().toISOString(),
-        lastVersion: parsedRes.releaseTag || config.releaseTag,
+        lastVersion: parsedRes.releaseTag || (config.releaseTag && config.releaseTag !== 'Baza' ? config.releaseTag : 'main'),
       });
       return parsedRes;
     }
 
     // 3. If GitHub API is rate-limited (60 req/hr on Netlify) or unavailable, check via jsDelivr / Raw headers
-    const rawHeadUrl = `https://raw.githubusercontent.com/${parsedRepo.owner}/${parsedRepo.repo}/${config.releaseTag || 'Baza'}/data-catalog.json`;
+    const branchTag = config.releaseTag && config.releaseTag !== 'Baza' ? config.releaseTag : 'main';
+    const rawHeadUrl = `https://raw.githubusercontent.com/${parsedRepo.owner}/${parsedRepo.repo}/${branchTag}/data-catalog.json`;
     try {
       const rawRes = await fetchWithTimeout(rawHeadUrl, { method: 'HEAD', cache: 'no-store' }, 3500);
       if (rawRes.ok) {
@@ -210,8 +211,8 @@ export async function checkGitHubReleaseUpdates(): Promise<GitHubCheckResult> {
           success: true,
           connected: true,
           hasUpdate: hasUpdate,
-          releaseTag: config.releaseTag || 'Baza',
-          releaseName: `Wydanie ${config.releaseTag || 'Baza'} (Raw)`,
+          releaseTag: branchTag,
+          releaseName: `Wydanie ${branchTag} (Raw)`,
           publishedAt: lastMod || new Date().toISOString(),
           message: 'Połączono z bazą na GitHubie (dostępna najnowsza wersja).',
         };
@@ -224,8 +225,8 @@ export async function checkGitHubReleaseUpdates(): Promise<GitHubCheckResult> {
       success: true,
       connected: true,
       hasUpdate: true,
-      releaseTag: config.releaseTag || 'Baza',
-      releaseName: config.releaseTag || 'Baza',
+      releaseTag: branchTag,
+      releaseName: branchTag,
       message: 'Dostępne repozytorium GitHub. Kliknij "Pobierz", aby zaktualizować bazę.',
     };
   } catch (clientErr: any) {
@@ -294,7 +295,8 @@ export async function pullDatabaseFromGitHub(customConfig?: Partial<GitHubSyncCo
 
     const owner = parsed.owner;
     const repo = parsed.repo;
-    const tag = encodeURIComponent(config.releaseTag || 'Baza');
+    const branchTag = config.releaseTag && config.releaseTag !== 'Baza' ? config.releaseTag : 'main';
+    const tag = encodeURIComponent(branchTag);
     const timestamp = Date.now();
 
     // Check if GitHub Releases API gives us an asset URL
@@ -465,7 +467,7 @@ export async function pullDatabaseFromGitHub(customConfig?: Partial<GitHubSyncCo
       lastSynced: new Date().toISOString(),
       lastChecked: new Date().toISOString(),
       lastTotalRows: parsedDoc.rows.length,
-      lastVersion: config.releaseTag || 'Backup',
+      lastVersion: config.releaseTag && config.releaseTag !== 'Baza' ? config.releaseTag : 'main',
     });
 
     console.log(`[GitHub Sync Success]: Database downloaded successfully via ${successfulUrl}`);

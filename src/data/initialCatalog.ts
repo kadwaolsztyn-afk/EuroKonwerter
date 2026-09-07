@@ -20314,7 +20314,7 @@ export const INITIAL_COMPREHENSIVE_CATALOG: ImportedDocument = {
   name: "sheet.html",
   fileType: "json",
   sizeFormatted: "320 KB",
-  importedAt: new Date("2026-09-07T08:20:41.654Z"),
+  importedAt: new Date("2026-09-07T08:30:13.977Z"),
   version: CURRENT_DATABASE_VERSION,
   totalRows: 461,
   brandsCount: 33,

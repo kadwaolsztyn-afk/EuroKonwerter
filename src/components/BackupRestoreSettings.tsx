@@ -328,15 +328,20 @@ export const BackupRestoreSettings: React.FC<BackupRestoreSettingsProps> = ({
   };
 
   const handleToggleStartupCheck = async (enabled: boolean) => {
-    const updated = await saveGitHubSyncConfig({
-      checkOnStartup: enabled,
-    });
-    setGhConfig(updated);
-    showSuccess(
-      enabled
-        ? 'Włączono automatyczne sprawdzanie bazy przy uruchomieniu aplikacji.'
-        : 'Wyłączono automatyczne sprawdzanie bazy przy starcie.'
-    );
+    try {
+      const updated = await saveGitHubSyncConfig({
+        checkOnStartup: enabled,
+      });
+      setGhConfig(updated);
+      if (enabled) {
+        showSuccess('Włączono automatyczne pobieranie bazy. Pobieranie aktualnej bazy z GitHub...');
+        await handlePullGitHub();
+      } else {
+        showSuccess('Wyłączono automatyczne pobieranie bazy przy starcie.');
+      }
+    } catch (err: any) {
+      showError(err?.message || 'Wystąpił błąd podczas zmiany ustawień automatycznego pobierania.');
+    }
   };
 
   // 1. Export Backup to JSON file
@@ -1149,20 +1154,28 @@ export const BackupRestoreSettings: React.FC<BackupRestoreSettingsProps> = ({
               type="checkbox"
               checked={ghConfig.checkOnStartup}
               onChange={(e) => handleToggleStartupCheck(e.target.checked)}
-              className="w-4 h-4 rounded text-indigo-500 bg-slate-900 border-slate-700 focus:ring-0 focus:ring-offset-0 cursor-pointer"
+              disabled={isPullingGH}
+              className="w-4 h-4 rounded text-indigo-500 bg-slate-900 border-slate-700 focus:ring-0 focus:ring-offset-0 cursor-pointer disabled:opacity-50"
             />
-            <span>
-              <strong>Automatycznie sprawdzaj i pobieraj aktualną bazę z GitHub</strong> przy każdym uruchomieniu aplikacji
+            <span className="flex flex-wrap items-center gap-2">
+              <span>
+                <strong>Automatycznie sprawdzaj i pobieraj aktualną bazę z GitHub</strong> przy każdym uruchomieniu aplikacji
+              </span>
+              {isPullingGH && (
+                <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-300 text-[11px] font-medium border border-indigo-500/30">
+                  <RefreshCw className="w-3 h-3 animate-spin text-indigo-400" /> Pobieranie bazy...
+                </span>
+              )}
             </span>
           </label>
 
           <a
-            href={`${(ghConfig.repoUrl || 'https://github.com/kadwaolsztyn-afk/EuroKonwerter').replace(/\/$/, '')}/releases/tag/${ghConfig.releaseTag || 'Baza'}`}
+            href={(ghConfig.repoUrl || 'https://github.com/kadwaolsztyn-afk/EuroKonwerter').replace(/\/$/, '')}
             target="_blank"
             rel="noopener noreferrer"
             className="text-[11px] text-indigo-400 hover:text-indigo-300 flex items-center gap-1 underline self-end sm:self-auto shrink-0"
           >
-            <span>Instrukcja aktualizacji w GitHub Release</span>
+            <span>Repozytorium GitHub (gałąź main)</span>
             <ExternalLink className="w-3 h-3" />
           </a>
         </div>

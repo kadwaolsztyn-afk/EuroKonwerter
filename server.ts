@@ -817,10 +817,10 @@ async function startServer() {
   // POST Pull & Apply Database from GitHub
   app.post('/api/sync/github/pull', async (req, res) => {
     try {
-      let cfg = defaultGitHubConfig;
+      let cfg = { ...defaultGitHubConfig, ...(req.body?.config || {}) };
       if (fs.existsSync(GITHUB_CONFIG_FILE)) {
         try {
-          cfg = { ...defaultGitHubConfig, ...JSON.parse(fs.readFileSync(GITHUB_CONFIG_FILE, 'utf-8')) };
+          cfg = { ...cfg, ...JSON.parse(fs.readFileSync(GITHUB_CONFIG_FILE, 'utf-8')), ...(req.body?.config || {}) };
         } catch {}
       }
 
