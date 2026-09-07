@@ -1,0 +1,153 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <!-- Background Gradients -->
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0f172a" />
+      <stop offset="50%" stop-color="#020617" />
+      <stop offset="100%" stop-color="#030712" />
+    </linearGradient>
+
+    <!-- Metallic Bezel Outer Rim -->
+    <linearGradient id="rimGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#38bdf8" />
+      <stop offset="25%" stop-color="#1e293b" />
+      <stop offset="50%" stop-color="#f59e0b" />
+      <stop offset="75%" stop-color="#0f172a" />
+      <stop offset="100%" stop-color="#0284c7" />
+    </linearGradient>
+
+    <!-- Headlight Housing Shadow/Gloss -->
+    <linearGradient id="housingGrad" x1="0%" y1="0%" x2="100%" y2="80%">
+      <stop offset="0%" stop-color="#1e293b" />
+      <stop offset="40%" stop-color="#0f172a" />
+      <stop offset="100%" stop-color="#020617" />
+    </linearGradient>
+
+    <!-- LED Crystal Projector Lens 1 (Ice Cyan) -->
+    <radialGradient id="lensGlow1" cx="40%" cy="40%" r="60%">
+      <stop offset="0%" stop-color="#ffffff" />
+      <stop offset="25%" stop-color="#67e8f9" />
+      <stop offset="55%" stop-color="#0284c7" />
+      <stop offset="85%" stop-color="#0369a1" />
+      <stop offset="100%" stop-color="#082f49" />
+    </radialGradient>
+
+    <!-- Projector Lens 2 (Matrix Beam) -->
+    <radialGradient id="lensGlow2" cx="35%" cy="35%" r="65%">
+      <stop offset="0%" stop-color="#ffffff" />
+      <stop offset="30%" stop-color="#a5f3fc" />
+      <stop offset="60%" stop-color="#0ea5e9" />
+      <stop offset="100%" stop-color="#0c4a6e" />
+    </radialGradient>
+
+    <!-- Amber Turn Indicator Strip -->
+    <linearGradient id="amberStrip" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#fbbf24" />
+      <stop offset="50%" stop-color="#f59e0b" />
+      <stop offset="100%" stop-color="#d97706" />
+    </linearGradient>
+
+    <!-- Laser Light Beam (Forward Projection) -->
+    <linearGradient id="lightBeam" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.95" />
+      <stop offset="35%" stop-color="#0284c7" stop-opacity="0.5" />
+      <stop offset="70%" stop-color="#0369a1" stop-opacity="0.18" />
+      <stop offset="100%" stop-color="#0284c7" stop-opacity="0" />
+    </linearGradient>
+
+    <!-- Upper DRL LED Blade (Neon Ice White/Blue) -->
+    <linearGradient id="drlBlade" x1="0%" y1="0%" x2="100%" y2="50%">
+      <stop offset="0%" stop-color="#ffffff" />
+      <stop offset="30%" stop-color="#e0f2fe" />
+      <stop offset="70%" stop-color="#38bdf8" />
+      <stop offset="100%" stop-color="#0284c7" />
+    </linearGradient>
+
+    <!-- Filter for vibrant headlight glow -->
+    <filter id="glowEffect" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="8" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+    <filter id="strongGlow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="16" result="blur2" />
+      <feComposite in="SourceGraphic" in2="blur2" operator="over" />
+    </filter>
+  </defs>
+
+  <!-- Base Squircle App Tile -->
+  <rect x="16" y="16" width="480" height="480" rx="108" ry="108" fill="url(#bgGrad)" stroke="url(#rimGrad)" stroke-width="8" />
+
+  <!-- Subtle grid texture lines in background -->
+  <path d="M 80,16 L 80,496 M 160,16 L 160,496 M 240,16 L 240,496 M 320,16 L 320,496 M 400,16 L 400,496" stroke="#1e293b" stroke-width="1.5" stroke-opacity="0.35" />
+  <path d="M 16,80 L 496,80 M 16,160 L 496,160 M 16,240 L 496,240 M 16,320 L 496,320 M 16,400 L 496,400" stroke="#1e293b" stroke-width="1.5" stroke-opacity="0.35" />
+
+  <!-- Dynamic Light Beams radiating to the right -->
+  <path d="M 230,225 L 485,150 L 490,290 L 230,255 Z" fill="url(#lightBeam)" filter="url(#glowEffect)" />
+  <path d="M 155,275 L 488,245 L 492,390 L 155,310 Z" fill="url(#lightBeam)" filter="url(#glowEffect)" opacity="0.85" />
+  
+  <!-- Outer Headlight Assembly / Transparent Polycarbonate Shell Silhouette -->
+  <path d="M 68,170 C 130,135 270,120 425,185 C 445,193 452,215 440,235 C 385,325 295,385 140,378 C 88,375 62,335 60,285 C 58,235 60,195 68,170 Z" 
+        fill="url(#housingGrad)" 
+        stroke="#334155" 
+        stroke-width="6" />
+
+  <!-- Inner Dark Chrome Reflector Bezel -->
+  <path d="M 86,188 C 142,156 265,142 405,200 C 418,206 422,222 412,236 C 362,312 284,360 148,354 C 108,352 84,322 80,282 C 78,242 80,208 86,188 Z" 
+        fill="#090d16" 
+        stroke="#1e293b" 
+        stroke-width="4" />
+
+  <!-- TOP DRL (Daytime Running Light) Neon Blade Strip - Distinctive Sharp Shape -->
+  <path d="M 98,180 C 170,150 280,140 412,198 C 418,201 415,210 408,211 C 285,162 172,172 104,204 C 96,208 92,198 98,180 Z" 
+        fill="url(#drlBlade)" 
+        filter="url(#glowEffect)" />
+
+  <!-- AMBER Dynamic Turn Signal Light bar (Bottom Accent) -->
+  <path d="M 112,342 C 190,348 275,326 360,272 C 366,268 372,274 366,279 C 280,336 192,358 112,352 C 105,351 106,341 112,342 Z" 
+        fill="url(#amberStrip)" 
+        filter="url(#glowEffect)" />
+
+  <!-- 1st Projector Housing (Main Bi-LED / Laser Light Projector) -->
+  <g transform="translate(195, 235)">
+    <!-- Outer Chrome Ring -->
+    <circle cx="0" cy="0" r="54" fill="#0f172a" stroke="#475569" stroke-width="5" />
+    <circle cx="0" cy="0" r="46" fill="#020617" stroke="#38bdf8" stroke-width="2.5" />
+    <!-- Glass Lens with Radiant Cyan Core -->
+    <circle cx="0" cy="0" r="40" fill="url(#lensGlow1)" filter="url(#glowEffect)" />
+    <!-- Optical Lens Reflections -->
+    <ellipse cx="-12" cy="-14" rx="16" ry="9" transform="rotate(-25 -12 -14)" fill="#ffffff" opacity="0.85" />
+    <ellipse cx="14" cy="14" rx="10" ry="5" transform="rotate(-25 14 14)" fill="#ffffff" opacity="0.4" />
+    <!-- Center Laser Dot -->
+    <circle cx="0" cy="0" r="9" fill="#ffffff" />
+  </g>
+
+  <!-- 2nd Projector Housing (High-Beam / Matrix Sub-Projector) -->
+  <g transform="translate(315, 245)">
+    <!-- Outer Chrome Ring -->
+    <circle cx="0" cy="0" r="42" fill="#0f172a" stroke="#475569" stroke-width="4" />
+    <circle cx="0" cy="0" r="35" fill="#020617" stroke="#38bdf8" stroke-width="2" />
+    <!-- Glass Lens -->
+    <circle cx="0" cy="0" r="30" fill="url(#lensGlow2)" filter="url(#glowEffect)" />
+    <!-- Reflections -->
+    <ellipse cx="-9" cy="-10" rx="11" ry="6" transform="rotate(-25 -9 -10)" fill="#ffffff" opacity="0.8" />
+    <!-- Center Dot -->
+    <circle cx="0" cy="0" r="6" fill="#ffffff" />
+  </g>
+
+  <!-- Corner Cornering Light / Mini LED Matrix Cluster (Left side) -->
+  <g transform="translate(115, 255)">
+    <rect x="-14" y="-20" width="10" height="9" rx="2" fill="#38bdf8" filter="url(#glowEffect)" />
+    <rect x="-14" y="-6" width="10" height="9" rx="2" fill="#38bdf8" filter="url(#glowEffect)" />
+    <rect x="-14" y="8" width="10" height="9" rx="2" fill="#38bdf8" filter="url(#glowEffect)" />
+  </g>
+
+  <!-- High-Tech Badge Text / Micro Brand Tag on Bottom: "AUTO LAMPS" / "CENNIK" -->
+  <g transform="translate(256, 436)">
+    <rect x="-115" y="-18" width="230" height="34" rx="17" fill="#0b1329" stroke="#334155" stroke-width="2" />
+    <text x="0" y="5" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="14" font-weight="900" letter-spacing="2.5" fill="#f8fafc">
+      CENNIK LAMP
+    </text>
+    <circle cx="-90" cy="-1" r="4" fill="#f59e0b" />
+    <circle cx="90" cy="-1" r="4" fill="#38bdf8" />
+  </g>
+</svg>

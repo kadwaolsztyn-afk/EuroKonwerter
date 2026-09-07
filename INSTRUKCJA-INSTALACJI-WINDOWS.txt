@@ -1,0 +1,54 @@
+================================================================================
+INSTRUKCJA SAMODZIELNEJ INSTALACJI PROGRAMU "CENNIK LAMP SAMOCHODOWYCH" (EXE)
+Dla systemów Windows: 64-bit (x64) oraz 32-bit (x32 / x86 / ia32)
+================================================================================
+
+Program został przygotowany jako w pełni samodzielna aplikacja desktopowa Windows
+(zbudowana w technologii Electron + React), działająca offline bez konieczności
+uruchamiania przeglądarki czy zewnętrznych serwerów.
+
+Instalator działa dokładnie na wzór programów takich jak Microsoft Office:
+ - Posiada polski kreator instalacji NSIS (.EXE)
+ - Umożliwia wybór folderu docelowego (np. C:\Program Files\Cennik Lamp Samochodowych)
+ - Tworzy skrót z dedykowaną ikoną na Pulpicie
+ - Dodaje program do Menu Start oraz Panelu sterowania (Dodaj/Usuń programy)
+ - Posiada moduł pełnej deinstalacji
+
+--------------------------------------------------------------------------------
+1. JAK WYGENEROWAĆ PLIKI INSTALACYJNE .EXE NA SWOIM KOMPUTERZE
+--------------------------------------------------------------------------------
+Jeśli posiadasz pobrany folder z projektem na dysku:
+
+KROK 1: Upewnij się, że masz zainstalowane bezpłatne środowisko Node.js (LTS):
+        https://nodejs.org (jeśli jeszcze go nie masz)
+
+KROK 2: W głównym folderze programu kliknij dwukrotnie plik:
+        👉 "buduj-exe.bat" lub "buduj-instalator-x64-i-x32.bat"
+
+KROK 3: Po zakończeniu procesu (1-2 minuty), automatycznie otworzy się folder "release",
+        w którym znajdziesz gotowe pliki instalacyjne:
+        
+        🔹 Cennik Lamp Samochodowych-Setup-x64.exe   -> Dla Windows 64-bit (Windows 10, 11, 8.1 64-bit)
+        🔹 Cennik Lamp Samochodowych-Setup-ia32.exe  -> Dla Windows 32-bit (Starsze systemy / x86)
+        
+        (Opcjonalnie dostępne są też wersje Portable bez instalacji: buduj-portable.bat)
+
+--------------------------------------------------------------------------------
+2. INSTALACJA NA DOWOLNYM KOMPUTERZE
+--------------------------------------------------------------------------------
+1. Skopiuj wygenerowany plik (.exe) na pendrive lub wyślij na docelowy komputer.
+2. Uruchom plik (np. Cennik Lamp Samochodowych-Setup-x64.exe).
+3. Postępuj zgodnie z komunikatami instalatora:
+   - Wybierz opcję "Zainstaluj dla każdego użytkownika" lub "Tylko dla mnie"
+   - Kliknij "Zainstaluj"
+4. Po zakończeniu instalacji na Pulpicie pojawi się ikona "Cennik Lamp Samochodowych".
+5. Kliknij dwukrotnie ikonę - program uruchomi się jako samodzielna aplikacja okienkowa!
+
+--------------------------------------------------------------------------------
+3. KOMENDY DLA ZAAWANSOWANYCH (Terminal / PowerShell / CMD):
+--------------------------------------------------------------------------------
+- Obie wersje (x64 i x32):   npm run build:installer
+- Tylko wersja 64-bit:       npm run build:installer:x64
+- Tylko wersja 32-bit:       npm run build:installer:x32
+- Wersje Portable (bez instalacji): npm run build:portable
+================================================================================

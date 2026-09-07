@@ -1,0 +1,17 @@
+{
+  "enabled": false,
+  "checkOnStartup": true,
+  "repoUrl": "https://github.com/kadwaolsztyn-afk/EuroKonwerter",
+  "releaseTag": "main",
+  "targetAssetFileName": "data-catalog.json",
+  "lastChecked": "2026-08-25T15:17:44.040Z",
+  "lastSynced": "2026-09-06T12:19:14.126Z",
+  "lastVersion": "main",
+  "lastTotalRows": 461,
+  "githubToken": "",
+  "lastPushed": "2026-09-05T16:11:18.571Z",
+  "autoSyncEnabled": true,
+  "autoSyncIntervalMinutes": 60,
+  "syncOnNetworkReconnect": true,
+  "notifyOnAutoUpdate": true
+}
