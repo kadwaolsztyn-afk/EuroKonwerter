@@ -69,10 +69,13 @@ export async function checkLinkServerStatus(): Promise<LinkServerStatus> {
     }
 
     // Fallback: if /api/catalog/status is not yet available, try HEAD on /api/catalog
+    const headController = new AbortController();
+    const headTimeout = setTimeout(() => headController.abort(), 4000);
     const headRes = await fetch('/api/catalog', {
       method: 'HEAD',
-      signal: AbortSignal.timeout(4000),
+      signal: headController.signal,
     });
+    clearTimeout(headTimeout);
 
     return {
       connected: headRes.ok,

@@ -575,7 +575,7 @@ async function startServer() {
 
   const defaultGitHubConfig = {
     enabled: true,
-    checkOnStartup: false,
+    checkOnStartup: true,
     repoUrl: 'https://github.com/kadwaolsztyn-afk/EuroKonwerter',
     releaseTag: 'main',
     targetAssetFileName: 'data-catalog.json',
@@ -626,6 +626,79 @@ async function startServer() {
       const updated = { ...current, ...config, githubToken: '' };
       fs.writeFileSync(GITHUB_CONFIG_FILE, JSON.stringify(updated, null, 2), 'utf-8');
       return res.json({ success: true, config: updated });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // Security Configuration (Access Passwords for Settings & Wholesale)
+  const SECURITY_CONFIG_FILE = path.join(process.cwd(), 'security-config.json');
+  const defaultSecurityConfig = {
+    settingsPassword: '505690291',
+    wholesalePassword: '505690291',
+    updatedAt: new Date().toISOString(),
+  };
+
+  // GET Security passwords
+  app.get('/api/security/passwords', (req, res) => {
+    try {
+      res.setHeader('Cache-Control', 'no-cache');
+      if (fs.existsSync(SECURITY_CONFIG_FILE)) {
+        const raw = fs.readFileSync(SECURITY_CONFIG_FILE, 'utf-8');
+        try {
+          const cfg = JSON.parse(raw);
+          return res.json({
+            success: true,
+            passwords: {
+              settingsPassword: cfg.settingsPassword || '505690291',
+              wholesalePassword: cfg.wholesalePassword || '505690291',
+              updatedAt: cfg.updatedAt || null,
+            },
+          });
+        } catch {}
+      }
+      return res.json({ success: true, passwords: defaultSecurityConfig });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // POST Security passwords
+  app.post('/api/security/passwords', (req, res) => {
+    try {
+      const { settingsPassword, wholesalePassword } = req.body;
+      let current = { ...defaultSecurityConfig };
+      if (fs.existsSync(SECURITY_CONFIG_FILE)) {
+        try {
+          current = { ...current, ...JSON.parse(fs.readFileSync(SECURITY_CONFIG_FILE, 'utf-8')) };
+        } catch {}
+      }
+      const updated = {
+        settingsPassword: (settingsPassword && typeof settingsPassword === 'string' && settingsPassword.trim())
+          ? settingsPassword.trim()
+          : current.settingsPassword,
+        wholesalePassword: (wholesalePassword && typeof wholesalePassword === 'string' && wholesalePassword.trim())
+          ? wholesalePassword.trim()
+          : current.wholesalePassword,
+        updatedAt: new Date().toISOString(),
+      };
+      fs.writeFileSync(SECURITY_CONFIG_FILE, JSON.stringify(updated, null, 2), 'utf-8');
+      return res.json({ success: true, passwords: updated });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // POST Reset Security passwords
+  app.post('/api/security/passwords/reset', (req, res) => {
+    try {
+      const reset = {
+        settingsPassword: '505690291',
+        wholesalePassword: '505690291',
+        updatedAt: new Date().toISOString(),
+      };
+      fs.writeFileSync(SECURITY_CONFIG_FILE, JSON.stringify(reset, null, 2), 'utf-8');
+      return res.json({ success: true, passwords: reset });
     } catch (err: any) {
       return res.status(500).json({ success: false, error: err.message });
     }
@@ -989,7 +1062,7 @@ async function startServer() {
         brandsCount: documentToSave.brandsCount || new Set(documentToSave.rows.map((r: any) => r.brand)).size,
         usedUrl,
         syncedAt: new Date().toISOString(),
-        message: `Pomyślnie zaktualizowano bazę danych z GitHub (${documentToSave.rows.length} modeli)!`,
+        message: 'Baza została zaktualizowana',
       });
     } catch (err: any) {
       console.error('[GitHub Sync Pull Error]:', err);
@@ -1078,7 +1151,7 @@ async function startServer() {
         totalRows: documentToSave.rows.length,
         brandsCount: documentToSave.brandsCount,
         usedUrl: targetUrl,
-        message: `Pomyślnie pobrano i zaktualizowano bazę z podanego linku (${documentToSave.rows.length} modeli)!`,
+        message: 'Baza została zaktualizowana',
       });
     } catch (err: any) {
       console.error('[URL Sync Error]:', err);
@@ -1259,37 +1332,24 @@ async function startServer() {
 
   // Production detection:
   // In dev mode (tsx server.ts), Vite dev server runs as middleware for HMR and instant code editing.
-  // In production (node dist/server.cjs, NODE_ENV=production, or Cloud Run K_SERVICE), pre-built static assets in dist/ are served.
+  // In production (node dist/server.cjs or NODE_ENV=production), pre-built static assets in dist/ are served.
   const isProduction =
     process.env.NODE_ENV === 'production' ||
-    Boolean(process.env.K_SERVICE) ||
+    (process.env.NODE_ENV !== 'development' && Boolean(process.env.K_SERVICE)) ||
     (typeof __filename !== 'undefined' && __filename.endsWith('.cjs'));
 
-  if (!isProduction) {
-    const { createServer: createViteServer } = await import('vite');
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: 'spa',
-    });
-    app.use(vite.middlewares);
-  } else {
-    const cwdDist = path.join(process.cwd(), 'dist');
-    const dirnameDist = typeof __dirname !== 'undefined' ? __dirname : cwdDist;
-    const distPath = fs.existsSync(path.join(cwdDist, 'index.html'))
-      ? cwdDist
-      : fs.existsSync(path.join(dirnameDist, 'index.html'))
-      ? dirnameDist
-      : cwdDist;
+  const serveStaticAssets = () => {
+    const candidatePaths = [
+      path.join(process.cwd(), 'dist'),
+      typeof __dirname !== 'undefined' ? __dirname : '',
+      typeof __dirname !== 'undefined' ? path.join(__dirname, '..', 'dist') : '',
+      process.cwd(),
+    ].filter(Boolean);
 
-    if (!fs.existsSync(path.join(distPath, 'index.html'))) {
-      console.warn('⚠️ dist/index.html not found, falling back to Vite middleware');
-      const { createServer: createViteServer } = await import('vite');
-      const vite = await createViteServer({
-        server: { middlewareMode: true },
-        appType: 'spa',
-      });
-      app.use(vite.middlewares);
-    } else {
+    const distPath = candidatePaths.find((p) => fs.existsSync(path.join(p, 'index.html'))) || path.join(process.cwd(), 'dist');
+
+    if (fs.existsSync(path.join(distPath, 'index.html'))) {
+      console.log(`📦 Serving production static assets from: ${distPath}`);
       app.use(express.static(distPath, {
         maxAge: '1d',
         etag: true,
@@ -1307,7 +1367,32 @@ async function startServer() {
           res.status(404).send('Application build not found.');
         }
       });
+    } else {
+      console.warn('⚠️ dist/index.html not found in candidate paths:', candidatePaths);
+      app.get('*', (req, res) => {
+        const rootIndex = path.join(process.cwd(), 'index.html');
+        if (fs.existsSync(rootIndex)) {
+          return res.sendFile(rootIndex);
+        }
+        res.status(200).send('<!DOCTYPE html><html><head><title>AutoLamp Cennik</title></head><body><div id="root">Aplikacja uruchamia się... Proszę odświeżyć za chwilę.</div></body></html>');
+      });
     }
+  };
+
+  if (!isProduction) {
+    try {
+      const { createServer: createViteServer } = await import('vite');
+      const vite = await createViteServer({
+        server: { middlewareMode: true },
+        appType: 'spa',
+      });
+      app.use(vite.middlewares);
+    } catch (viteErr) {
+      console.warn('Vite dev middleware could not be initialized, falling back to static build assets:', viteErr);
+      serveStaticAssets();
+    }
+  } else {
+    serveStaticAssets();
   }
 
   // Central Express error handling middleware
@@ -1320,35 +1405,40 @@ async function startServer() {
   });
 
   // Primary listening port:
-  // Port 3000 is required by the infrastructure reverse proxy (NGINX on port 8080 proxies to port 3000)
-  // and the container startup probe explicitly verifies port 3000.
-  const PORT = 3000;
-  const server = app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚀 Cennik server running on http://0.0.0.0:${PORT} (production: ${isProduction})`);
-  });
-  server.on('error', (err: any) => {
-    console.error(`Error on primary port ${PORT}:`, err);
+  // Primary listener: Port 3000 is always bound for local development and NGINX reverse-proxy routing
+  const DEFAULT_PORT = 3000;
+  const server = app.listen(DEFAULT_PORT, '0.0.0.0', () => {
+    console.log(`🚀 Primary Cennik server running on http://0.0.0.0:${DEFAULT_PORT} (production: ${isProduction})`);
   });
 
-  // Secondary listener: in standalone container environments where PORT is passed and differs from 3000,
-  // also bind to process.env.PORT if available.
-  let secondaryServer: any = null;
+  server.on('error', (err: any) => {
+    if (err && err.code === 'EADDRINUSE') {
+      console.log(`[Info] Primary port ${DEFAULT_PORT} is already bound; server continues.`);
+    } else {
+      console.error(`Error on primary port ${DEFAULT_PORT}:`, err);
+    }
+  });
+
+  // Cloud Run listener: If deployed to Cloud Run where PORT is provided (e.g. 8080) and differs from 3000,
+  // also listen on that port so Cloud Run startup & readiness health checks succeed immediately.
+  let cloudRunServer: any = null;
   const envPortStr = process.env.PORT;
   const envPort = envPortStr ? parseInt(envPortStr, 10) : null;
-  if (envPort && envPort !== PORT && !isNaN(envPort)) {
+  if (envPort && envPort !== DEFAULT_PORT && !isNaN(envPort)) {
     try {
-      secondaryServer = app.listen(envPort, '0.0.0.0', () => {
-        console.log(`🚀 Secondary listener active on http://0.0.0.0:${envPort}`);
+      cloudRunServer = app.listen(envPort, '0.0.0.0', () => {
+        console.log(`🚀 Cloud Run environment listener active on http://0.0.0.0:${envPort}`);
       });
-      secondaryServer.on('error', (err: any) => {
-        // EADDRINUSE is expected when NGINX is present on port 8080
-        if (err.code !== 'EADDRINUSE') {
-          console.warn(`Secondary server error on port ${envPort}:`, err);
+      cloudRunServer.on('error', (err: any) => {
+        if (err.code === 'EADDRINUSE') {
+          // Normal in dev sandbox where local Nginx reverse-proxy is already listening on 8080
+          console.log(`[Info] Port ${envPort} is occupied by reverse-proxy layer. Primary port ${DEFAULT_PORT} handles application traffic.`);
+        } else {
+          console.warn(`[Cloud Run] Secondary listener error on port ${envPort}:`, err);
         }
-        secondaryServer = null;
       });
-    } catch (_) {
-      secondaryServer = null;
+    } catch (bindErr) {
+      console.log(`[Info] Handled secondary port ${envPort} binding:`, bindErr);
     }
   }
 
@@ -1359,23 +1449,15 @@ async function startServer() {
       if (typeof (server as any).closeIdleConnections === 'function') {
         (server as any).closeIdleConnections();
       }
-      if (secondaryServer && typeof secondaryServer.closeIdleConnections === 'function') {
-        secondaryServer.closeIdleConnections();
+      if (cloudRunServer && typeof cloudRunServer.closeIdleConnections === 'function') {
+        cloudRunServer.closeIdleConnections();
       }
       server.close(() => {
-        if (secondaryServer) {
-          try {
-            secondaryServer.close(() => {
-              console.log('HTTP servers closed successfully');
-              process.exit(0);
-            });
-          } catch (_) {
-            process.exit(0);
-          }
-        } else {
-          console.log('HTTP server closed successfully');
-          process.exit(0);
+        if (cloudRunServer) {
+          try { cloudRunServer.close(); } catch (_) {}
         }
+        console.log('HTTP server closed successfully');
+        process.exit(0);
       });
     } catch (_) {
       process.exit(0);
@@ -1401,4 +1483,5 @@ process.on('unhandledRejection', (reason, promise) => {
 
 startServer().catch((err) => {
   console.error('Fatal server startup error:', err);
+  process.exit(1);
 });

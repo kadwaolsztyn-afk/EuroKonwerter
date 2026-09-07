@@ -24,6 +24,7 @@ import { FileUploadModal } from './components/FileUploadModal';
 import { PasswordLockModal } from './components/PasswordLockModal';
 import { DesktopBuildInfoModal } from './components/DesktopBuildInfoModal';
 import { CheckCircle2, RotateCcw, Sparkles, X, AlertTriangle } from 'lucide-react';
+import { syncSecurityPasswordsFromServer } from './utils/security';
 
 export default function App() {
   const [mainTab, setMainTab] = useState<MainTab>('client');
@@ -37,7 +38,8 @@ export default function App() {
   const [isRestoreModalOpen, setIsRestoreModalOpen] = useState(false);
 
   // Password Protection for 'wholesale' and 'settings' (starts locked by default)
-  const [isUnlocked, setIsUnlocked] = useState<boolean>(false);
+  const [isWholesaleUnlocked, setIsWholesaleUnlocked] = useState<boolean>(false);
+  const [isSettingsUnlocked, setIsSettingsUnlocked] = useState<boolean>(false);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
   const [pendingTab, setPendingTab] = useState<MainTab>('settings');
 
@@ -51,7 +53,8 @@ export default function App() {
   const handleTabChange = (targetTab: MainTab) => {
     if (targetTab === 'client') {
       // Switching to Client tab always locks protected access
-      setIsUnlocked(false);
+      setIsWholesaleUnlocked(false);
+      setIsSettingsUnlocked(false);
       try {
         sessionStorage.removeItem('auth_locked_tabs_unlocked');
       } catch {
@@ -62,22 +65,35 @@ export default function App() {
     }
 
     if (targetTab === 'settings') {
-      // Przy wejściu do ustawień zawsze pytaj o hasło dostępu
-      setPendingTab('settings');
-      setIsAuthModalOpen(true);
+      if (isSettingsUnlocked) {
+        setMainTab('settings');
+      } else {
+        setPendingTab('settings');
+        setIsAuthModalOpen(true);
+      }
       return;
     }
 
-    if (isUnlocked) {
-      setMainTab(targetTab);
-    } else {
-      setPendingTab(targetTab);
-      setIsAuthModalOpen(true);
+    if (targetTab === 'wholesale') {
+      if (isWholesaleUnlocked || isSettingsUnlocked) {
+        setMainTab('wholesale');
+      } else {
+        setPendingTab('wholesale');
+        setIsAuthModalOpen(true);
+      }
+      return;
     }
+
+    setMainTab(targetTab);
   };
 
   const handleAuthSuccess = () => {
-    setIsUnlocked(true);
+    if (pendingTab === 'settings') {
+      setIsSettingsUnlocked(true);
+      setIsWholesaleUnlocked(true);
+    } else if (pendingTab === 'wholesale') {
+      setIsWholesaleUnlocked(true);
+    }
     try {
       sessionStorage.setItem('auth_locked_tabs_unlocked', 'true');
     } catch {
@@ -93,7 +109,8 @@ export default function App() {
   };
 
   const handleLockSession = () => {
-    setIsUnlocked(false);
+    setIsWholesaleUnlocked(false);
+    setIsSettingsUnlocked(false);
     try {
       sessionStorage.removeItem('auth_locked_tabs_unlocked');
     } catch {
@@ -106,6 +123,9 @@ export default function App() {
   // 1. Initial Load from local storage and automatic GitHub download if enabled in settings
   useEffect(() => {
     let isCancelled = false;
+
+    // Sync latest passwords from backend if online
+    syncSecurityPasswordsFromServer().catch(() => {});
 
     async function initCatalogFromStorage() {
       try {
@@ -124,7 +144,7 @@ export default function App() {
             if (pullRes.success && pullRes.document && !isCancelled) {
               setCurrentDocument(pullRes.document);
               setIsSavedInMemory(true);
-              showNotification(`🔄 Automatycznie zaktualizowano bazę z GitHub (${pullRes.document.rows.length} modeli)!`);
+              showNotification('Baza została zaktualizowana');
             }
           } catch (ghErr) {
             console.warn('[App Startup] Automatic GitHub download failed:', ghErr);
@@ -144,7 +164,7 @@ export default function App() {
           if (pullRes.success && pullRes.document && !isCancelled) {
             setCurrentDocument(pullRes.document);
             setIsSavedInMemory(true);
-            showNotification(`🔄 Zsynchronizowano najnowszą bazę z GitHub (${pullRes.document.rows.length} modeli)!`);
+            showNotification('Baza została zaktualizowana');
           }
         }).catch(() => {});
       }
@@ -500,7 +520,9 @@ export default function App() {
         onPushToGitHub={handlePushToGitHub}
         isPushingToGitHub={isPushingGH}
         isSaved={isSavedInMemory}
-        isUnlocked={isUnlocked}
+        isUnlocked={isWholesaleUnlocked || isSettingsUnlocked}
+        isWholesaleUnlocked={isWholesaleUnlocked}
+        isSettingsUnlocked={isSettingsUnlocked}
         onLock={handleLockSession}
       />
 
@@ -537,6 +559,7 @@ export default function App() {
             }}
             onResetTo35Brands={handlePerformReset}
             onSaveToServer={handleSaveToServer}
+            onNotification={showNotification}
           />
         )}
       </main>
@@ -604,7 +627,7 @@ export default function App() {
         document={currentDocument}
         onRestoreBackup={(doc) => {
           updateAndPersistDocument(doc);
-          showNotification('Baza cennika została pomyślnie zaktualizowana!');
+          showNotification('Baza została zaktualizowana');
         }}
       />
 

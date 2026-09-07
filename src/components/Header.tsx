@@ -21,6 +21,7 @@ import {
   CloudUpload,
   Database,
   GitCommit,
+  KeyRound,
 } from 'lucide-react';
 import { MainTab, ViewMode, ImportedDocument } from '../types';
 
@@ -44,6 +45,8 @@ interface HeaderProps {
   isPushingToGitHub?: boolean;
   isSaved?: boolean;
   isUnlocked?: boolean;
+  isWholesaleUnlocked?: boolean;
+  isSettingsUnlocked?: boolean;
   onLock?: () => void;
 }
 
@@ -67,8 +70,14 @@ export const Header: React.FC<HeaderProps> = ({
   isPushingToGitHub = false,
   isSaved = true,
   isUnlocked = false,
+  isWholesaleUnlocked,
+  isSettingsUnlocked,
   onLock,
 }) => {
+  const wholesaleUnlocked = isWholesaleUnlocked !== undefined ? isWholesaleUnlocked : isUnlocked;
+  const settingsUnlocked = isSettingsUnlocked !== undefined ? isSettingsUnlocked : isUnlocked;
+  const anyUnlocked = isUnlocked || wholesaleUnlocked || settingsUnlocked;
+
   return (
     <header className="bg-slate-900 text-white border-b border-slate-800 sticky top-0 z-40 shadow-xl">
       {/* Top Primary Navigation Bar */}
@@ -83,11 +92,11 @@ export const Header: React.FC<HeaderProps> = ({
                   ? 'bg-amber-400 text-slate-950 border-amber-400 shadow-md shadow-amber-400/20 scale-105'
                   : 'bg-slate-950 text-slate-400 border-slate-800 hover:text-white hover:bg-slate-800/80'
               }`}
-              title={isUnlocked ? 'Hurt (Odblokowane)' : 'Hurt (Wymaga hasła)'}
+              title={wholesaleUnlocked ? 'Hurt (Odblokowane)' : 'Hurt (Wymaga hasła)'}
               aria-label="Hurt"
             >
               <Building2 className="w-4 h-4" />
-              {!isUnlocked && (
+              {!wholesaleUnlocked && (
                 <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-amber-400 rounded-full ring-2 ring-slate-900 flex items-center justify-center">
                   <span className="w-1.5 h-1.5 bg-slate-950 rounded-full"></span>
                 </span>
@@ -120,7 +129,7 @@ export const Header: React.FC<HeaderProps> = ({
               </span>
             )}
 
-            {isUnlocked && onLock && (
+            {anyUnlocked && onLock && (
               <button
                 type="button"
                 onClick={onLock}
@@ -139,11 +148,11 @@ export const Header: React.FC<HeaderProps> = ({
                   ? 'bg-amber-400 text-slate-950 border-amber-400 shadow-md scale-105'
                   : 'bg-slate-950 text-slate-400 border-slate-800 hover:text-white hover:bg-slate-800/80'
               }`}
-              title={isUnlocked ? 'Ustawienia (Odblokowane)' : 'Ustawienia (Wymagają hasła)'}
+              title={settingsUnlocked ? 'Ustawienia (Odblokowane)' : 'Ustawienia (Wymagają hasła)'}
               aria-label="Ustawienia"
             >
               <Settings className="w-4 h-4" />
-              {!isUnlocked && (
+              {!settingsUnlocked && (
                 <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-amber-400 rounded-full ring-2 ring-slate-900 flex items-center justify-center">
                   <span className="w-1.5 h-1.5 bg-slate-950 rounded-full"></span>
                 </span>
@@ -233,6 +242,19 @@ export const Header: React.FC<HeaderProps> = ({
               >
                 <Database className="w-4 h-4" />
                 <span>Kopia i Przywracanie Bazy</span>
+              </button>
+
+              <button
+                onClick={() => setViewMode('security')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all whitespace-nowrap cursor-pointer ${
+                  viewMode === 'security'
+                    ? 'bg-amber-400 text-slate-950 font-bold shadow-sm'
+                    : 'text-slate-300 hover:text-white hover:bg-slate-700/50'
+                }`}
+                title="Zmień hasło dostępu lub konfigurację zabezpieczeń"
+              >
+                <KeyRound className="w-4 h-4" />
+                <span>Zmiana Hasła</span>
               </button>
             </div>
 

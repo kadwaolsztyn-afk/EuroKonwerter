@@ -1,5 +1,5 @@
 export type MainTab = 'client' | 'wholesale' | 'settings';
-export type ViewMode = 'original' | 'grid' | 'gallery' | 'analytics' | 'backup';
+export type ViewMode = 'original' | 'grid' | 'gallery' | 'analytics' | 'backup' | 'security';
 
 export interface DocumentRow {
   id: number;

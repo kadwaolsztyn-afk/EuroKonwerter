@@ -363,6 +363,49 @@ export const ImageGalleryView: React.FC<ImageGalleryViewProps> = ({
                   </div>
                 </div>
               </>
+            ) : selectedRow.multimediaImageUrl || selectedRow.multimediaVersion || selectedRow.multimediaPriceClient ? (
+              <>
+                <div className="p-6 bg-slate-950 flex justify-center items-center min-h-[220px]">
+                  {selectedRow.multimediaImageUrl ? (
+                    <img
+                      src={selectedRow.multimediaImageUrl}
+                      alt={`Multimedia ${selectedRow.brand} ${selectedRow.model}`}
+                      className="max-h-[240px] max-w-full object-contain rounded"
+                      referrerPolicy="no-referrer"
+                    />
+                  ) : (
+                    <div className="text-slate-500 text-center flex flex-col items-center gap-2">
+                      <Tv className="w-12 h-12 text-slate-700" />
+                      <p className="text-xs">Brak zdjęcia systemu multimedialnego</p>
+                    </div>
+                  )}
+                </div>
+
+                <div className="p-5 bg-slate-900 space-y-3 text-xs border-t border-slate-800">
+                  <div className="grid grid-cols-2 gap-3 text-slate-300">
+                    <div>
+                      <span className="text-slate-500 block text-[11px]">Wersja Systemu:</span>
+                      <strong className="text-white font-mono">{selectedRow.multimediaVersion || 'Standard'}</strong>
+                    </div>
+                    <div>
+                      <span className="text-slate-500 block text-[11px]">Cena Klient:</span>
+                      <strong className="text-sky-400 font-mono">{selectedRow.multimediaPriceClient || '-'}</strong>
+                    </div>
+                    {selectedRow.multimediaPriceBroker && (
+                      <div>
+                        <span className="text-slate-500 block text-[11px]">Cena Pośrednik / Hurt:</span>
+                        <strong className="text-amber-400 font-mono">{selectedRow.multimediaPriceBroker}</strong>
+                      </div>
+                    )}
+                    {selectedRow.multimediaNotes && (
+                      <div className="col-span-2">
+                        <span className="text-slate-500 block text-[11px]">Uwagi / Zakres adaptacji:</span>
+                        <p className="text-slate-200 text-xs mt-0.5">{selectedRow.multimediaNotes}</p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </>
             ) : (
               <div className="p-8 sm:p-10 flex flex-col items-center justify-center text-center bg-slate-950">
                 <div className="w-14 h-14 rounded-2xl bg-slate-900 border border-slate-800 text-amber-400 flex items-center justify-center mb-3">

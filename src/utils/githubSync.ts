@@ -41,7 +41,7 @@ export interface GitHubCheckResult {
 
 const DEFAULT_CONFIG: GitHubSyncConfig = {
   enabled: true,
-  checkOnStartup: false,
+  checkOnStartup: true,
   repoUrl: 'https://github.com/kadwaolsztyn-afk/EuroKonwerter',
   releaseTag: 'main',
   targetAssetFileName: 'data-catalog.json',
@@ -52,6 +52,7 @@ const DEFAULT_CONFIG: GitHubSyncConfig = {
 };
 
 const CONFIG_STORAGE_KEY = 'carlamps_github_sync_config';
+const STARTUP_CHECK_DEFAULT_MIGRATED_KEY = 'carlamps_startup_check_v5_always_checked';
 
 /**
  * Loads the GitHub sync configuration from localStorage with defaults
@@ -59,6 +60,7 @@ const CONFIG_STORAGE_KEY = 'carlamps_github_sync_config';
 export function getGitHubSyncConfig(): GitHubSyncConfig {
   try {
     const saved = localStorage.getItem(CONFIG_STORAGE_KEY);
+    const hasMigrated = localStorage.getItem(STARTUP_CHECK_DEFAULT_MIGRATED_KEY);
     if (saved) {
       const parsed = JSON.parse(saved);
       // Migrate old default repository and tags if they were saved previously
@@ -68,7 +70,27 @@ export function getGitHubSyncConfig(): GitHubSyncConfig {
       if (!parsed.releaseTag || parsed.releaseTag === 'Konwerter' || parsed.releaseTag === 'Backup' || parsed.releaseTag === 'Baza') {
         parsed.releaseTag = 'main';
       }
-      return { ...DEFAULT_CONFIG, ...parsed, releaseTag: parsed.releaseTag || 'main' };
+      // Guarantee that checkOnStartup is true by default from the start
+      let checkOnStartup = parsed.checkOnStartup;
+      if (checkOnStartup === undefined || checkOnStartup === null || !hasMigrated) {
+        checkOnStartup = true;
+        parsed.checkOnStartup = true;
+        try {
+          localStorage.setItem(STARTUP_CHECK_DEFAULT_MIGRATED_KEY, 'true');
+          localStorage.setItem(CONFIG_STORAGE_KEY, JSON.stringify({ ...DEFAULT_CONFIG, ...parsed, checkOnStartup: true }));
+        } catch (_) {}
+      }
+      return { 
+        ...DEFAULT_CONFIG, 
+        ...parsed, 
+        checkOnStartup: checkOnStartup ?? true, 
+        releaseTag: parsed.releaseTag || 'main' 
+      };
+    } else {
+      try {
+        localStorage.setItem(STARTUP_CHECK_DEFAULT_MIGRATED_KEY, 'true');
+        localStorage.setItem(CONFIG_STORAGE_KEY, JSON.stringify(DEFAULT_CONFIG));
+      } catch (_) {}
     }
   } catch (e) {
     console.warn('Failed to parse saved github config:', e);
@@ -280,7 +302,7 @@ export async function pullDatabaseFromGitHub(customConfig?: Partial<GitHubSyncCo
           document: doc,
           totalRows: doc.rows.length,
           brandsCount: doc.brandsCount,
-          message: `Pobrano najnowszą bazę z GitHub (${doc.rows.length} modeli)!`,
+          message: 'Baza została zaktualizowana',
         };
       }
     }
@@ -477,7 +499,7 @@ export async function pullDatabaseFromGitHub(customConfig?: Partial<GitHubSyncCo
       document: parsedDoc,
       totalRows: parsedDoc.rows.length,
       brandsCount: parsedDoc.brandsCount,
-      message: `Pobrano i zastosowano najnowszą bazę z GitHub (${parsedDoc.rows.length} modeli, ${parsedDoc.brandsCount} marek)!`,
+      message: 'Baza została zaktualizowana',
     };
   } catch (err: any) {
     console.error('[GitHub Sync Pull Error]:', err);
@@ -1003,7 +1025,7 @@ export async function pullDatabaseFromUrl(targetUrl: string): Promise<{
         return {
           success: true,
           document: doc,
-          message: data.message || `Pomyślnie pobrano i wczytano bazę (${doc.rows.length} modeli)!`,
+          message: 'Baza została zaktualizowana',
         };
       }
     }
@@ -1045,7 +1067,7 @@ export async function pullDatabaseFromUrl(targetUrl: string): Promise<{
       return {
         success: true,
         document: docToSave,
-        message: `Pomyślnie pobrano i zapisano bazę (${docToSave.rows.length} modeli)!`,
+        message: 'Baza została zaktualizowana',
       };
     }
     return {

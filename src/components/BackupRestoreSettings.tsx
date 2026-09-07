@@ -57,6 +57,7 @@ import {
   GitHubCheckResult,
 } from '../utils/githubSync';
 import { PortableModeCard } from './PortableModeCard';
+import { SecurityPasswordSettings } from './SecurityPasswordSettings';
 
 interface BackupRestoreSettingsProps {
   document: ImportedDocument;
@@ -84,7 +85,10 @@ export const BackupRestoreSettings: React.FC<BackupRestoreSettingsProps> = ({
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // GitHub Sync State
-  const [ghConfig, setGhConfig] = useState<GitHubSyncConfig>(getGitHubSyncConfig());
+  const [ghConfig, setGhConfig] = useState<GitHubSyncConfig>(() => {
+    const cfg = getGitHubSyncConfig();
+    return { ...cfg, checkOnStartup: cfg.checkOnStartup ?? true };
+  });
   const [isCheckingGH, setIsCheckingGH] = useState(false);
   const [isPullingGH, setIsPullingGH] = useState(false);
   const [isPushingGH, setIsPushingGH] = useState(false);
@@ -151,7 +155,7 @@ export const BackupRestoreSettings: React.FC<BackupRestoreSettingsProps> = ({
       const res = await pullDatabaseFromLinkServer();
       if (res.success && res.document) {
         onRestoreBackup(res.document);
-        showSuccess(res.message || `Pomyślnie zsynchronizowano bazę (${res.document.rows.length} modeli)!`);
+        showSuccess('Baza została zaktualizowana');
         await handleCheckLink();
       } else {
         showError(res.error || 'Nie udało się pobrać bazy z serwera linku.');
@@ -182,7 +186,7 @@ export const BackupRestoreSettings: React.FC<BackupRestoreSettingsProps> = ({
       if (res.success && res.document) {
         onRestoreBackup(res.document);
         setGhConfig(getGitHubSyncConfig());
-        showSuccess(res.message || `Pomyślnie wczytano bazę (${res.document.rows.length} modeli)!`);
+        showSuccess('Baza została zaktualizowana');
       } else {
         showError(res.error || 'Nie udało się pobrać bazy ze wskazanego linku.');
       }
@@ -197,6 +201,20 @@ export const BackupRestoreSettings: React.FC<BackupRestoreSettingsProps> = ({
     // Initial silent checks on mount
     handleCheckGitHub(true);
     handleCheckLink();
+
+    // Sync latest GitHub config from server to ensure auto-update checkbox is consistent
+    fetch('/api/sync/github/config')
+      .then((r) => r.json())
+      .then((data) => {
+        if (data && data.success && data.config) {
+          setGhConfig((prev) => ({
+            ...prev,
+            ...data.config,
+            checkOnStartup: data.config.checkOnStartup ?? true,
+          }));
+        }
+      })
+      .catch(() => {});
   }, []);
 
   const showSuccess = (msg: string) => {
@@ -241,9 +259,7 @@ export const BackupRestoreSettings: React.FC<BackupRestoreSettingsProps> = ({
       if (result.success && result.document) {
         onRestoreBackup(result.document);
         setGhConfig(getGitHubSyncConfig());
-        showSuccess(
-          `Pomyślnie zsynchronizowano bazę z GitHub! Zastosowano ${result.totalRows} pozycji (${result.brandsCount} marek).`
-        );
+        showSuccess('Baza została zaktualizowana');
         // Refresh check status
         handleCheckGitHub(true);
       } else {
@@ -472,6 +488,56 @@ export const BackupRestoreSettings: React.FC<BackupRestoreSettingsProps> = ({
         )}
       </div>
 
+      {/* KARTA AUTO-AKTUALIZACJI: ZAZNACZONA Z AUTOMATU */}
+      <div className="bg-slate-900 border-2 border-amber-400/60 rounded-2xl p-5 sm:p-6 shadow-2xl relative overflow-hidden bg-gradient-to-r from-slate-900 via-slate-900 to-amber-950/25">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="flex items-start gap-3.5">
+            <div className="w-12 h-12 rounded-xl bg-amber-400/20 border border-amber-400/40 flex items-center justify-center text-amber-400 shrink-0 shadow-lg shadow-amber-500/10">
+              <RefreshCw className={`w-6 h-6 ${isPullingGH ? 'animate-spin' : ''}`} />
+            </div>
+            <div>
+              <div className="flex items-center gap-2.5 flex-wrap">
+                <h3 className="text-base sm:text-lg font-bold text-white">
+                  Automatyczna Aktualizacja Bazy z Chmury (GitHub / Serwer)
+                </h3>
+                <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 flex items-center gap-1.5">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                  {ghConfig.checkOnStartup ? 'Aktywna (Zaznaczona z automatu)' : 'Wyłączona'}
+                </span>
+              </div>
+              <p className="text-xs sm:text-sm text-slate-300 mt-1.5 max-w-2xl leading-relaxed">
+                Po włączeniu program automatycznie sprawdza i pobiera najnowszą zaktualizowaną bazę ze wszystkimi cenami, marżami i zdjęciami natychmiast przy każdym uruchomieniu aplikacji.
+              </p>
+            </div>
+          </div>
+
+          <label className="flex items-center gap-3 px-4 py-3 rounded-xl bg-slate-950/90 border-2 border-amber-400/60 hover:border-amber-400 transition-all cursor-pointer select-none shrink-0 shadow-xl">
+            <input
+              type="checkbox"
+              checked={ghConfig.checkOnStartup ?? true}
+              onChange={(e) => handleToggleStartupCheck(e.target.checked)}
+              disabled={isPullingGH}
+              className="w-5 h-5 rounded text-amber-400 bg-slate-900 border-slate-700 focus:ring-0 focus:ring-offset-0 cursor-pointer disabled:opacity-50"
+            />
+            <div className="flex flex-col">
+              <span className="text-xs sm:text-sm font-bold text-white">
+                Auto-aktualizacja aktywna
+              </span>
+              <span className="text-[10px] text-amber-400 font-semibold">
+                ✓ Kwadracik zaznaczony z automatu
+              </span>
+            </div>
+          </label>
+        </div>
+
+        {isPullingGH && (
+          <div className="mt-3 pt-3 border-t border-slate-800/80 flex items-center gap-2 text-xs text-amber-300">
+            <RefreshCw className="w-3.5 h-3.5 animate-spin text-amber-400" />
+            <span>Pobieranie i synchronizacja najnowszej bazy danych...</span>
+          </div>
+        )}
+      </div>
+
       {/* 100% Portable Mode Status & Local Folder Overview */}
       <PortableModeCard />
 
@@ -615,6 +681,9 @@ export const BackupRestoreSettings: React.FC<BackupRestoreSettingsProps> = ({
           </span>
         </div>
       </div>
+
+      {/* Security & Access Password Management */}
+      <SecurityPasswordSettings onSuccessNotification={(msg) => showSuccess(msg)} />
 
       {/* Main Action Cards: 1. Zapisz Backup & 2. Przywróć Backup */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-5">

@@ -73,7 +73,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({ document }) => {
           </div>
 
           <div className="bg-slate-800/80 p-4 rounded-xl border border-slate-700/60">
-            <span className="text-slate-400 text-xs block mb-1">Liczba MarekW Pliku</span>
+            <span className="text-slate-400 text-xs block mb-1">Liczba Marek w Pliku</span>
             <span className="text-2xl font-bold text-amber-400">{document.brandsCount}</span>
           </div>
 
@@ -90,10 +90,10 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({ document }) => {
       </div>
 
       {/* Brands Breakdown Grid */}
-      <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
-        <h3 className="font-bold text-base text-slate-900 mb-4 flex items-center gap-2">
-          <Car className="w-5 h-5 text-amber-500" />
-          Rozkład Liczby Modeli według MarekW ({brandStats.length} marek)
+      <div className="bg-slate-900 p-6 rounded-2xl border border-slate-800 shadow-xl">
+        <h3 className="font-bold text-base text-white mb-4 flex items-center gap-2">
+          <Car className="w-5 h-5 text-amber-400" />
+          Rozkład Liczby Modeli według Marek ({brandStats.length} marek)
         </h3>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 max-h-[420px] overflow-y-auto pr-2">
@@ -102,13 +102,13 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({ document }) => {
             return (
               <div
                 key={brand}
-                className="p-3 bg-slate-50 border border-slate-200 rounded-xl flex items-center justify-between hover:border-amber-400 transition-colors"
+                className="p-3 bg-slate-950/80 border border-slate-800 rounded-xl flex items-center justify-between hover:border-amber-400/60 transition-colors"
               >
                 <div>
-                  <span className="font-bold text-slate-900 text-sm block">{brand}</span>
-                  <span className="text-xs text-slate-500">{percentage}% całości</span>
+                  <span className="font-bold text-white text-sm block">{brand}</span>
+                  <span className="text-xs text-slate-400">{percentage}% całości</span>
                 </div>
-                <span className="px-2.5 py-1 bg-amber-400/20 text-amber-900 font-bold text-xs rounded-lg border border-amber-400/30">
+                <span className="px-2.5 py-1 bg-amber-400/15 text-amber-300 font-bold text-xs rounded-lg border border-amber-400/30">
                   {count} {count === 1 ? 'model' : 'modeli'}
                 </span>
               </div>
