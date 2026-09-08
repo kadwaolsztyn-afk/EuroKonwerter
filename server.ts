@@ -1405,28 +1405,57 @@ async function startServer() {
   });
 
   // Primary listening port:
-  // Port 3000 is hardcoded by infrastructure and bound to 0.0.0.0
-  const PORT = 3000;
-  const server = app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚀 Cennik server running on http://0.0.0.0:${PORT} (production: ${isProduction})`);
+  // Port 3000 is always bound for internal reverse-proxy routing
+  const DEFAULT_PORT = 3000;
+  const server = app.listen(DEFAULT_PORT, '0.0.0.0', () => {
+    console.log(`🚀 Cennik server running on http://0.0.0.0:${DEFAULT_PORT} (production: ${isProduction})`);
   });
 
   server.on('error', (err: any) => {
     if (err && err.code === 'EADDRINUSE') {
-      console.log(`[Info] Port ${PORT} is already bound; server continues.`);
+      console.log(`[Info] Port ${DEFAULT_PORT} is already bound; server continues.`);
     } else {
-      console.error(`Error on port ${PORT}:`, err);
+      console.error(`Error on port ${DEFAULT_PORT}:`, err);
     }
   });
 
+  // Cloud Run / container environment listener:
+  // If deployed to Cloud Run where PORT is provided (e.g. 8080) and differs from 3000,
+  // also bind that port so Cloud Run container health checks and ingress routing succeed.
+  let cloudRunServer: any = null;
+  const envPortStr = process.env.PORT;
+  const envPort = envPortStr ? parseInt(envPortStr, 10) : null;
+  if (envPort && envPort !== DEFAULT_PORT && !isNaN(envPort)) {
+    try {
+      cloudRunServer = app.listen(envPort, '0.0.0.0', () => {
+        console.log(`🚀 Cloud Run environment listener active on http://0.0.0.0:${envPort}`);
+      });
+      cloudRunServer.on('error', (err: any) => {
+        if (err && err.code === 'EADDRINUSE') {
+          console.log(`[Info] Port ${envPort} occupied by environment proxy; internal traffic routed to ${DEFAULT_PORT}.`);
+        } else {
+          console.warn(`[Cloud Run] Listener warning on port ${envPort}:`, err);
+        }
+      });
+    } catch (bindErr) {
+      console.log(`[Info] Handled secondary port ${envPort} binding:`, bindErr);
+    }
+  }
+
   // Graceful shutdown handling for Cloud Run & container orchestration
   const shutdown = (signal: string) => {
-    console.log(`${signal} signal received: closing HTTP server gracefully`);
+    console.log(`${signal} signal received: closing HTTP servers gracefully`);
     try {
       if (typeof (server as any).closeIdleConnections === 'function') {
         (server as any).closeIdleConnections();
       }
+      if (cloudRunServer && typeof cloudRunServer.closeIdleConnections === 'function') {
+        cloudRunServer.closeIdleConnections();
+      }
       server.close(() => {
+        if (cloudRunServer) {
+          try { cloudRunServer.close(); } catch (_) {}
+        }
         console.log('HTTP server closed successfully');
         process.exit(0);
       });
