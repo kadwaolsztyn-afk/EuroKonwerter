@@ -1405,42 +1405,19 @@ async function startServer() {
   });
 
   // Primary listening port:
-  // Primary listener: Port 3000 is always bound for local development and NGINX reverse-proxy routing
-  const DEFAULT_PORT = 3000;
-  const server = app.listen(DEFAULT_PORT, '0.0.0.0', () => {
-    console.log(`🚀 Primary Cennik server running on http://0.0.0.0:${DEFAULT_PORT} (production: ${isProduction})`);
+  // Port 3000 is hardcoded by infrastructure and bound to 0.0.0.0
+  const PORT = 3000;
+  const server = app.listen(PORT, '0.0.0.0', () => {
+    console.log(`🚀 Cennik server running on http://0.0.0.0:${PORT} (production: ${isProduction})`);
   });
 
   server.on('error', (err: any) => {
     if (err && err.code === 'EADDRINUSE') {
-      console.log(`[Info] Primary port ${DEFAULT_PORT} is already bound; server continues.`);
+      console.log(`[Info] Port ${PORT} is already bound; server continues.`);
     } else {
-      console.error(`Error on primary port ${DEFAULT_PORT}:`, err);
+      console.error(`Error on port ${PORT}:`, err);
     }
   });
-
-  // Cloud Run listener: If deployed to Cloud Run where PORT is provided (e.g. 8080) and differs from 3000,
-  // also listen on that port so Cloud Run startup & readiness health checks succeed immediately.
-  let cloudRunServer: any = null;
-  const envPortStr = process.env.PORT;
-  const envPort = envPortStr ? parseInt(envPortStr, 10) : null;
-  if (envPort && envPort !== DEFAULT_PORT && !isNaN(envPort)) {
-    try {
-      cloudRunServer = app.listen(envPort, '0.0.0.0', () => {
-        console.log(`🚀 Cloud Run environment listener active on http://0.0.0.0:${envPort}`);
-      });
-      cloudRunServer.on('error', (err: any) => {
-        if (err.code === 'EADDRINUSE') {
-          // Normal in dev sandbox where local Nginx reverse-proxy is already listening on 8080
-          console.log(`[Info] Port ${envPort} is occupied by reverse-proxy layer. Primary port ${DEFAULT_PORT} handles application traffic.`);
-        } else {
-          console.warn(`[Cloud Run] Secondary listener error on port ${envPort}:`, err);
-        }
-      });
-    } catch (bindErr) {
-      console.log(`[Info] Handled secondary port ${envPort} binding:`, bindErr);
-    }
-  }
 
   // Graceful shutdown handling for Cloud Run & container orchestration
   const shutdown = (signal: string) => {
@@ -1449,13 +1426,7 @@ async function startServer() {
       if (typeof (server as any).closeIdleConnections === 'function') {
         (server as any).closeIdleConnections();
       }
-      if (cloudRunServer && typeof cloudRunServer.closeIdleConnections === 'function') {
-        cloudRunServer.closeIdleConnections();
-      }
       server.close(() => {
-        if (cloudRunServer) {
-          try { cloudRunServer.close(); } catch (_) {}
-        }
         console.log('HTTP server closed successfully');
         process.exit(0);
       });

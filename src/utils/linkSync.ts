@@ -226,7 +226,7 @@ export async function pullDatabaseFromLinkServer(): Promise<LinkSyncResult> {
       document: doc,
       version: doc.version,
       totalRows: doc.rows.length,
-      message: `Pomyślnie pobrano najświeższą bazę z serwera linku (${doc.rows.length} modeli)!`,
+      message: 'Aktualizacja zakończona pomyślnie',
     };
   } catch (err: any) {
     return {

@@ -198,7 +198,7 @@ export default function App() {
           if (res.success && res.document && !isCancelled) {
             setCurrentDocument(res.document);
             setIsSavedInMemory(true);
-            showNotification(`🔄 Zsynchronizowano bazę z serwerem linku (${res.document.rows.length} modeli)!`);
+            showNotification('Aktualizacja zakończona pomyślnie');
           }
         }
       } catch (_) {}

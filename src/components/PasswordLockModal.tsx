@@ -72,7 +72,7 @@ export const PasswordLockModal: React.FC<PasswordLockModalProps> = ({
             <Lock className="w-7 h-7" />
           </div>
           <h3 className="text-lg font-bold text-white flex items-center gap-2">
-            Strefa chroniona hasłem
+            {targetTab === 'wholesale' ? 'Hurt' : 'Ustawienia'}
           </h3>
           <p className="text-xs text-slate-400 mt-1 max-w-xs">
             Dostęp do zakładki <strong className="text-amber-300 font-semibold">{tabName}</strong> wymaga autoryzacji kodem dostępu.
