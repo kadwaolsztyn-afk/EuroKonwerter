@@ -114,7 +114,9 @@ export async function syncSecurityPasswordsFromServer(): Promise<SecurityPasswor
             wholesalePassword: data.passwords.wholesalePassword || current.wholesalePassword,
             updatedAt: data.passwords.updatedAt || new Date().toISOString(),
           };
-          localStorage.setItem(SECURITY_STORAGE_KEY, JSON.stringify(merged));
+          try {
+            localStorage.setItem(SECURITY_STORAGE_KEY, JSON.stringify(merged));
+          } catch (_) {}
           if (typeof window !== 'undefined') {
             window.dispatchEvent(new CustomEvent(PASSWORDS_CHANGED_EVENT, { detail: merged }));
           }

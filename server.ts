@@ -24,7 +24,7 @@ try {
 }
 
 let cachedCatalogMeta = {
-  version: '2026.03_ALL_v461_SYNC_20260904_1224',
+  version: '2026.03_ALL_v461_OPT_20260910_0851',
   totalRows: 461,
   brandsCount: 34,
   serverUpdatedAt: new Date().toISOString(),
@@ -33,12 +33,14 @@ let cachedCatalogMeta = {
 
 try {
   if (fs.existsSync(DATA_FILE)) {
+    const raw = fs.readFileSync(DATA_FILE, 'utf-8');
+    const doc = JSON.parse(raw);
     const stats = fs.statSync(DATA_FILE);
     cachedCatalogMeta = {
-      version: '2026.03_ALL_v461_SYNC_20260904_1224',
-      totalRows: 461,
-      brandsCount: 34,
-      serverUpdatedAt: stats.mtime.toISOString(),
+      version: doc.version || '2026.03_ALL_v461_OPT_20260910_0851',
+      totalRows: doc.rows?.length || 461,
+      brandsCount: doc.brandsCount || 34,
+      serverUpdatedAt: doc.serverUpdatedAt || stats.mtime.toISOString(),
       lastModified: stats.mtimeMs,
     };
   }
@@ -183,16 +185,29 @@ async function startServer() {
   app.use('/uploads', express.static(PUBLIC_UPLOADS_DIR, { maxAge: '30d' }));
 
   app.get('/favicon.ico', (req, res) => {
-    const icoPath = path.join(process.cwd(), 'public', 'favicon.ico');
-    const pngPath = path.join(process.cwd(), 'public', 'icon.png');
-    if (fs.existsSync(icoPath)) return res.sendFile(icoPath);
-    if (fs.existsSync(pngPath)) return res.sendFile(pngPath);
+    const candidates = [
+      path.join(process.cwd(), 'dist', 'favicon.ico'),
+      path.join(process.cwd(), 'public', 'favicon.ico'),
+      path.join(process.cwd(), 'dist', 'icon.png'),
+      path.join(process.cwd(), 'public', 'icon.png'),
+    ];
+    for (const p of candidates) {
+      if (fs.existsSync(p)) return res.sendFile(p);
+    }
     res.status(204).end();
   });
 
   app.get(['/apple-touch-icon.png', '/apple-touch-icon-precomposed.png'], (req, res) => {
-    const pngPath = path.join(process.cwd(), 'public', 'icon-192.png');
-    if (fs.existsSync(pngPath)) return res.sendFile(pngPath);
+    const candidates = [
+      path.join(process.cwd(), 'dist', 'apple-touch-icon.png'),
+      path.join(process.cwd(), 'public', 'icon-192.png'),
+      path.join(process.cwd(), 'dist', 'icon-192.png'),
+      path.join(process.cwd(), 'public', 'icon.png'),
+      path.join(process.cwd(), 'dist', 'icon.png'),
+    ];
+    for (const p of candidates) {
+      if (fs.existsSync(p)) return res.sendFile(p);
+    }
     res.status(204).end();
   });
 
@@ -242,6 +257,31 @@ async function startServer() {
   });
 
   // Fast metadata/status endpoint for instant device-to-device sync checking (no heavy JSON transfer)
+  app.get('/api/export/project-zip', (req, res) => {
+    try {
+      const zipPath = '/tmp/EuroKonwerter-program-update.zip';
+      child_process.execSync(`python3 -c "
+import os, zipfile
+zip_path = '${zipPath}'
+exclude_dirs = {'node_modules', '.git', 'dist', '.next', '.cache'}
+with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+    for root, dirs, files in os.walk('.'):
+        dirs[:] = [d for d in dirs if d not in exclude_dirs]
+        for f in files:
+            if f.endswith('.zip') or f.endswith('.log') or f.startswith('.'): continue
+            fp = os.path.join(root, f)
+            arcname = os.path.relpath(fp, '.')
+            zipf.write(fp, arcname)
+"`);
+      res.setHeader('Content-Type', 'application/zip');
+      res.setHeader('Content-Disposition', 'attachment; filename="EuroKonwerter-program-update.zip"');
+      return res.sendFile(zipPath);
+    } catch (err: any) {
+      console.error('Error creating project zip:', err);
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
   const catalogStatusHandler = (req: any, res: any) => {
     try {
       res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
@@ -361,8 +401,117 @@ async function startServer() {
     }
   });
 
-  // UPLOAD IMAGE DIRECTLY TO LOCAL /uploads FOLDER
-  app.post('/api/uploads/upload', (req, res) => {
+  // HIGH-FIDELITY SMART IMAGE OPTIMIZER (Sharp + WebP/MozJPEG)
+  // Compresses uploaded photos to take minimum space while preserving crisp visual quality.
+  let cachedSharp: any = null;
+  async function getSharpInstance() {
+    if (cachedSharp) return cachedSharp;
+    try {
+      const s = await import('sharp');
+      cachedSharp = s.default || s;
+      return cachedSharp;
+    } catch (err: any) {
+      console.warn('[Sharp Load Notice] Sharp not loaded, using raw buffer:', err?.message);
+      return null;
+    }
+  }
+
+  interface OptimizedImageResult {
+    buffer: Buffer;
+    ext: string;
+    originalSize: number;
+    optimizedSize: number;
+    savedPercent: string;
+  }
+
+  async function optimizeImageBuffer(
+    rawBuffer: Buffer,
+    mimeOrExt: string,
+    options?: { maxWidth?: number; maxHeight?: number; quality?: number }
+  ): Promise<OptimizedImageResult> {
+    const originalSize = rawBuffer.length;
+    const isSvg = mimeOrExt.includes('svg');
+
+    if (isSvg) {
+      return {
+        buffer: rawBuffer,
+        ext: 'svg',
+        originalSize,
+        optimizedSize: originalSize,
+        savedPercent: '0%',
+      };
+    }
+
+    const maxWidth = options?.maxWidth || 1280;
+    const maxHeight = options?.maxHeight || 1280;
+    const quality = options?.quality || 82;
+
+    const sharp = await getSharpInstance();
+    if (!sharp) {
+      let fallbackExt = 'jpg';
+      if (mimeOrExt.includes('png')) fallbackExt = 'png';
+      else if (mimeOrExt.includes('webp')) fallbackExt = 'webp';
+      return {
+        buffer: rawBuffer,
+        ext: fallbackExt,
+        originalSize,
+        optimizedSize: originalSize,
+        savedPercent: '0%',
+      };
+    }
+
+    try {
+      // 1. Auto-rotate based on EXIF tag (ensures phone camera photos are never upside-down or sideways)
+      // 2. High quality Lanczos3 downsampling up to 1280x1280 (keeps fine lamp LEDs, matrix grids, and text razor-sharp)
+      // 3. WebP with smartSubsample: true (preserves vivid red/amber colors on vehicle lamps without chroma bleeding)
+      // 4. Strip EXIF, GPS, camera metadata to minimize size and protect privacy
+      const optimized = await sharp(rawBuffer)
+        .rotate()
+        .resize({
+          width: maxWidth,
+          height: maxHeight,
+          fit: 'inside',
+          withoutEnlargement: true,
+          kernel: 'lanczos3',
+        })
+        .webp({
+          quality,
+          effort: 6,
+          smartSubsample: true,
+          alphaQuality: 85,
+        })
+        .toBuffer();
+
+      const optimizedSize = optimized.length;
+      const savedPct =
+        originalSize > 0
+          ? (((originalSize - optimizedSize) / originalSize) * 100).toFixed(1)
+          : '0';
+
+      return {
+        buffer: optimized,
+        ext: 'webp',
+        originalSize,
+        optimizedSize,
+        savedPercent: `${savedPct}%`,
+      };
+    } catch (err: any) {
+      console.warn('[Image Optimize Warning]:', err?.message);
+      let fallbackExt = 'jpg';
+      if (mimeOrExt.includes('png')) fallbackExt = 'png';
+      else if (mimeOrExt.includes('webp')) fallbackExt = 'webp';
+      return {
+        buffer: rawBuffer,
+        ext: fallbackExt,
+        originalSize,
+        optimizedSize: originalSize,
+        savedPercent: '0%',
+      };
+    }
+  }
+
+  // UPLOAD IMAGE DIRECTLY TO LOCAL /uploads FOLDER WITH HIGH-QUALITY COMPRESSION
+  app.post('/api/uploads/upload', async (req, res) => {
     try {
       const { dataUrl, filename, brand, model, rowId } = req.body;
       if (!dataUrl || typeof dataUrl !== 'string') {
@@ -371,25 +520,21 @@ async function startServer() {
 
       // Check if image is base64 dataUrl
       const matches = dataUrl.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
-      let ext = 'jpg';
-      let buffer: Buffer;
+      let incomingMime = 'image/jpeg';
+      let rawBuffer: Buffer;
 
       if (matches && matches.length === 3) {
-        const mime = matches[1];
-        if (mime.includes('png')) ext = 'png';
-        else if (mime.includes('webp')) ext = 'webp';
-        else if (mime.includes('svg')) ext = 'svg';
-        else if (mime.includes('gif')) ext = 'gif';
-        buffer = Buffer.from(matches[2], 'base64');
+        incomingMime = matches[1];
+        rawBuffer = Buffer.from(matches[2], 'base64');
       } else if (dataUrl.startsWith('data:image/svg+xml')) {
-        ext = 'svg';
+        incomingMime = 'image/svg+xml';
         const svgContent = decodeURIComponent(dataUrl.replace('data:image/svg+xml;utf8,', ''));
-        buffer = Buffer.from(svgContent, 'utf-8');
+        rawBuffer = Buffer.from(svgContent, 'utf-8');
       } else {
         return res.status(400).json({ success: false, error: 'Nierozpoznany format danych zdjęcia.' });
       }
 
-      // Generate clean, safe filename
+      // Generate clean, safe filename base
       let safeBase = '';
       if (brand || model) {
         safeBase = `${brand || ''}_${model || ''}`.trim().toLowerCase().replace(/[^a-z0-9_-]+/gi, '_');
@@ -398,21 +543,30 @@ async function startServer() {
       }
       if (!safeBase) safeBase = `foto_${rowId || 'auto'}`;
 
-      const finalFileName = `${safeBase}_${Date.now()}.${ext}`;
+      // Compress and optimize with Sharp (WebP, Lanczos3, smart subsampling)
+      const { buffer: finalBuffer, ext: finalExt, originalSize, optimizedSize, savedPercent } =
+        await optimizeImageBuffer(rawBuffer, incomingMime);
+
+      const finalFileName = `${safeBase}_${Date.now()}.${finalExt}`;
       const targetPath = path.join(UPLOADS_DIR, finalFileName);
       const publicTargetPath = path.join(PUBLIC_UPLOADS_DIR, finalFileName);
 
-      fs.writeFileSync(targetPath, buffer);
+      fs.writeFileSync(targetPath, finalBuffer);
       try {
-        fs.writeFileSync(publicTargetPath, buffer);
+        fs.writeFileSync(publicTargetPath, finalBuffer);
       } catch (_) {}
 
-      console.log(`[Uploads] Saved image ${finalFileName} (${buffer.length} bytes) to program uploads/`);
+      console.log(
+        `[Uploads] Compressed & saved image ${finalFileName}: ${(originalSize / 1024).toFixed(1)} KB -> ${(optimizedSize / 1024).toFixed(1)} KB (${savedPercent} space saved)`
+      );
+
       return res.json({
         success: true,
         url: `/uploads/${finalFileName}`,
         filename: finalFileName,
-        size: buffer.length,
+        size: optimizedSize,
+        originalSize,
+        savedPercent,
       });
     } catch (err: any) {
       console.error('[Uploads Error]:', err);
@@ -452,8 +606,68 @@ async function startServer() {
     }
   });
 
-  // MIGRATE ANY INLINE BASE64 IMAGES IN CATALOG TO PHYSICAL FILES IN /uploads
-  app.post('/api/uploads/migrate-base64', (req, res) => {
+  // OPTIMIZE EXISTING IMAGES IN /uploads TO SAVE DISK SPACE
+  app.post('/api/uploads/optimize-existing', async (req, res) => {
+    try {
+      const sharp = await getSharpInstance();
+      if (!sharp) {
+        return res.json({ success: false, error: 'Biblioteka sharp nie jest dostępna.' });
+      }
+
+      const dirs = [PUBLIC_UPLOADS_DIR, UPLOADS_DIR];
+      let filesOptimized = 0;
+      let totalBytesSaved = 0;
+
+      for (const dir of dirs) {
+        if (!fs.existsSync(dir)) continue;
+        const fileNames = fs.readdirSync(dir);
+
+        for (const name of fileNames) {
+          const filePath = path.join(dir, name);
+          try {
+            const stats = fs.statSync(filePath);
+            // Only optimize files > 120KB
+            if (stats.size > 120 * 1024) {
+              const ext = path.extname(name).toLowerCase();
+              let optimizedBuf: Buffer | null = null;
+
+              if (ext === '.jpg' || ext === '.jpeg') {
+                optimizedBuf = await sharp(filePath)
+                  .rotate()
+                  .resize({ width: 1280, height: 1280, fit: 'inside', withoutEnlargement: true, kernel: 'lanczos3' })
+                  .jpeg({ quality: 82, mozjpeg: true })
+                  .toBuffer();
+              } else if (ext === '.png') {
+                optimizedBuf = await sharp(filePath)
+                  .rotate()
+                  .resize({ width: 1280, height: 1280, fit: 'inside', withoutEnlargement: true, kernel: 'lanczos3' })
+                  .png({ compressionLevel: 9 })
+                  .toBuffer();
+              }
+
+              if (optimizedBuf && optimizedBuf.length < stats.size) {
+                totalBytesSaved += stats.size - optimizedBuf.length;
+                fs.writeFileSync(filePath, optimizedBuf);
+                filesOptimized++;
+              }
+            }
+          } catch (_) {}
+        }
+      }
+
+      return res.json({
+        success: true,
+        filesOptimized,
+        totalBytesSaved,
+        totalSavedFormatted: `${(totalBytesSaved / 1024 / 1024).toFixed(2)} MB`,
+      });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // MIGRATE ANY INLINE BASE64 IMAGES IN CATALOG TO OPTIMIZED PHYSICAL FILES IN /uploads
+  app.post('/api/uploads/migrate-base64', async (req, res) => {
     try {
       if (!fs.existsSync(DATA_FILE)) {
         return res.status(404).json({ success: false, error: 'Brak pliku bazy katalogu (data-catalog.json).' });
@@ -466,25 +680,23 @@ async function startServer() {
 
       let migratedCount = 0;
       for (const row of document.rows) {
+        const cleanBrand = (row.brand || 'auto').toLowerCase().replace(/[^a-z0-9_-]+/gi, '_');
+        const cleanModel = (row.model || 'model').toLowerCase().replace(/[^a-z0-9_-]+/gi, '_');
+
         if (row.imageUrl && typeof row.imageUrl === 'string' && row.imageUrl.startsWith('data:image/')) {
           try {
             const matches = row.imageUrl.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
             if (matches && matches.length === 3) {
               const mime = matches[1];
-              let ext = 'jpg';
-              if (mime.includes('png')) ext = 'png';
-              else if (mime.includes('webp')) ext = 'webp';
+              const rawBuffer = Buffer.from(matches[2], 'base64');
+              const { buffer: optBuffer, ext } = await optimizeImageBuffer(rawBuffer, mime);
 
-              const cleanBrand = (row.brand || 'auto').toLowerCase().replace(/[^a-z0-9_-]+/gi, '_');
-              const cleanModel = (row.model || 'model').toLowerCase().replace(/[^a-z0-9_-]+/gi, '_');
               const fileName = `lampa_${cleanBrand}_${cleanModel}_${row.id}.${ext}`;
-
               const targetPath = path.join(UPLOADS_DIR, fileName);
               const publicTargetPath = path.join(PUBLIC_UPLOADS_DIR, fileName);
-              const buffer = Buffer.from(matches[2], 'base64');
 
-              fs.writeFileSync(targetPath, buffer);
-              try { fs.writeFileSync(publicTargetPath, buffer); } catch (_) {}
+              fs.writeFileSync(targetPath, optBuffer);
+              try { fs.writeFileSync(publicTargetPath, optBuffer); } catch (_) {}
 
               row.imageUrl = `/uploads/${fileName}`;
               migratedCount++;
@@ -493,17 +705,72 @@ async function startServer() {
             console.warn(`Could not migrate image for row ${row.id}:`, migrateErr);
           }
         }
+
+        if (row.multimediaImageUrl && typeof row.multimediaImageUrl === 'string' && row.multimediaImageUrl.startsWith('data:image/')) {
+          try {
+            const matches = row.multimediaImageUrl.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
+            if (matches && matches.length === 3) {
+              const mime = matches[1];
+              const rawBuffer = Buffer.from(matches[2], 'base64');
+              const { buffer: optBuffer, ext } = await optimizeImageBuffer(rawBuffer, mime);
+
+              const fileName = `multimedia_${cleanBrand}_${cleanModel}_${row.id}.${ext}`;
+              const targetPath = path.join(UPLOADS_DIR, fileName);
+              const publicTargetPath = path.join(PUBLIC_UPLOADS_DIR, fileName);
+
+              fs.writeFileSync(targetPath, optBuffer);
+              try { fs.writeFileSync(publicTargetPath, optBuffer); } catch (_) {}
+
+              row.multimediaImageUrl = `/uploads/${fileName}`;
+              migratedCount++;
+            }
+          } catch (migrateErr) {
+            console.warn(`Could not migrate multimedia image for row ${row.id}:`, migrateErr);
+          }
+        }
+
+        // Also migrate any base64 images in multimediaItems
+        if (Array.isArray(row.multimediaItems)) {
+          for (let mIdx = 0; mIdx < row.multimediaItems.length; mIdx++) {
+            const mItem = row.multimediaItems[mIdx];
+            if (mItem && mItem.imageUrl && typeof mItem.imageUrl === 'string' && mItem.imageUrl.startsWith('data:image/')) {
+              try {
+                const matches = mItem.imageUrl.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
+                if (matches && matches.length === 3) {
+                  const mime = matches[1];
+                  const rawBuffer = Buffer.from(matches[2], 'base64');
+                  const { buffer: optBuffer, ext } = await optimizeImageBuffer(rawBuffer, mime);
+
+                  const fileName = `multimedia_${cleanBrand}_${cleanModel}_${row.id}_${mIdx + 1}.${ext}`;
+                  const targetPath = path.join(UPLOADS_DIR, fileName);
+                  const publicTargetPath = path.join(PUBLIC_UPLOADS_DIR, fileName);
+
+                  fs.writeFileSync(targetPath, optBuffer);
+                  try { fs.writeFileSync(publicTargetPath, optBuffer); } catch (_) {}
+
+                  mItem.imageUrl = `/uploads/${fileName}`;
+                  if (mIdx === 0) {
+                    row.multimediaImageUrl = mItem.imageUrl;
+                  }
+                  migratedCount++;
+                }
+              } catch (migrateErr) {
+                console.warn(`Could not migrate multimediaItem[${mIdx}] for row ${row.id}:`, migrateErr);
+              }
+            }
+          }
+        }
       }
 
       if (migratedCount > 0) {
-        fs.writeFileSync(DATA_FILE, JSON.stringify(document, null, 2), 'utf-8');
-        console.log(`[Uploads Migration] Migrated ${migratedCount} base64 images into physical /uploads files.`);
+        syncDocumentEverywhere(document);
+        console.log(`[Uploads Migration] Migrated & compressed ${migratedCount} base64 images into physical /uploads files.`);
       }
 
       return res.json({
         success: true,
         migratedCount,
-        message: `Pomyślnie przeniesiono ${migratedCount} zdjęć do folderu /uploads.`,
+        message: `Pomyślnie przeniesiono i zoptymalizowano ${migratedCount} zdjęć do folderu /uploads.`,
       });
     } catch (err: any) {
       console.error('[Uploads Migration Error]:', err);
@@ -953,7 +1220,7 @@ async function startServer() {
               'User-Agent': 'AutoLamp-PriceCatalog-Sync/1.0',
               'Accept': 'application/json, text/plain, */*',
             },
-            signal: AbortSignal.timeout(35000),
+            signal: AbortSignal.timeout(3500),
           });
           if (fileRes.ok) {
             const text = await fileRes.text();
@@ -1159,10 +1426,10 @@ async function startServer() {
     }
   });
 
-  // POST Push local database and all image assets to GitHub repository
+  // POST Push local database or FULL project source code and all image assets to GitHub repository
   app.post('/api/sync/github/push', async (req, res) => {
     try {
-      const { document, token, repoUrl, commitMessage, branch = 'main' } = req.body;
+      const { document, token, repoUrl, commitMessage, branch = 'main', pushFullCode = false } = req.body;
 
       // 1. Resolve GitHub token
       let authToken = token;
@@ -1194,9 +1461,8 @@ async function startServer() {
             const matches = row.imageUrl.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
             if (matches && matches.length === 3) {
               const mime = matches[1];
-              let ext = 'jpg';
-              if (mime.includes('png')) ext = 'png';
-              else if (mime.includes('webp')) ext = 'webp';
+              const rawBuffer = Buffer.from(matches[2], 'base64');
+              const { buffer: optBuffer, ext } = await optimizeImageBuffer(rawBuffer, mime);
 
               const cleanBrand = (row.brand || 'auto').toLowerCase().replace(/[^a-z0-9_-]+/gi, '_');
               const cleanModel = (row.model || 'model').toLowerCase().replace(/[^a-z0-9_-]+/gi, '_');
@@ -1204,11 +1470,10 @@ async function startServer() {
 
               const targetPath = path.join(UPLOADS_DIR, fileName);
               const publicTargetPath = path.join(PUBLIC_UPLOADS_DIR, fileName);
-              const buffer = Buffer.from(matches[2], 'base64');
 
               try {
-                fs.writeFileSync(targetPath, buffer);
-                fs.writeFileSync(publicTargetPath, buffer);
+                fs.writeFileSync(targetPath, optBuffer);
+                fs.writeFileSync(publicTargetPath, optBuffer);
                 row.imageUrl = `/uploads/${fileName}`;
               } catch (writeImgErr) {
                 console.warn('Failed writing image to uploads:', writeImgErr);
@@ -1235,7 +1500,9 @@ async function startServer() {
       const versionStr = `2026.03_ALL_v461_SYNC_${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`;
       const msg =
         commitMessage ||
-        `Aktualizacja bazy (${docToPush?.rows?.length || 461} pozycji, ${uploadsCount} zdjęć, wersja ${versionStr})`;
+        (pushFullCode
+          ? `Aktualizacja calego programu i bazy EuroKonwerter (${docToPush?.rows?.length || 461} pozycji, ${uploadsCount} zdjęć, wersja ${versionStr}) - Auto-deploy Vercel`
+          : `Aktualizacja bazy (${docToPush?.rows?.length || 461} pozycji, ${uploadsCount} zdjęć, wersja ${versionStr})`);
 
       const gitRemoteAuthUrl = `https://x-access-token:${encodeURIComponent(cleanToken)}@github.com/${owner}/${repo}.git`;
       const execOpts = { cwd: process.cwd(), encoding: 'utf-8' as const, timeout: 120000 };
@@ -1268,17 +1535,27 @@ async function startServer() {
           }
         }
 
-        // Stage all database files, generated typescript catalog, and photos in public/uploads/
-        const filesToStage = ['data-catalog.json', 'public/data-catalog.json', 'src/data/initialCatalog.ts'];
-        if (fs.existsSync(path.join(process.cwd(), '.gitignore'))) filesToStage.push('.gitignore');
-        if (fs.existsSync(path.join(process.cwd(), 'public', 'uploads'))) filesToStage.push('public/uploads/');
-        child_process.execSync(`git add ${filesToStage.join(' ')}`, execOpts);
+        // Stage files based on pushFullCode flag
+        if (pushFullCode) {
+          // Stage entire source code, public assets, configurations, and database
+          child_process.execSync('git add -A', execOpts);
+        } else {
+          // Stage only database files and photos
+          const filesToStage = ['data-catalog.json', 'public/data-catalog.json', 'src/data/initialCatalog.ts'];
+          if (fs.existsSync(path.join(process.cwd(), '.gitignore'))) filesToStage.push('.gitignore');
+          if (fs.existsSync(path.join(process.cwd(), 'public', 'uploads'))) filesToStage.push('public/uploads/');
+          child_process.execSync(`git add ${filesToStage.join(' ')}`, execOpts);
+        }
 
         // Check if there are staged changes
         const statusOutput = child_process.execSync('git status --porcelain', execOpts).trim();
         let commitSha = '';
         if (statusOutput) {
           child_process.execSync(`git commit -m "${msg.replace(/"/g, '\\"')}"`, execOpts);
+          commitSha = child_process.execSync('git rev-parse HEAD', execOpts).trim();
+        } else {
+          // Create empty commit if needed so that Vercel is triggered
+          child_process.execSync(`git commit --allow-empty -m "${msg.replace(/"/g, '\\"')}"`, execOpts);
           commitSha = child_process.execSync('git rev-parse HEAD', execOpts).trim();
         }
 
@@ -1290,10 +1567,10 @@ async function startServer() {
           child_process.execSync(`git push origin ${branch} --force`, execOpts);
         }
 
-        // Update config (do NOT persist secret GitHub PAT to file to avoid GitHub push protection blocks)
+        // Update config
         const updatedConfig = {
           ...cfg,
-          githubToken: '',
+          githubToken: cleanToken,
           repoUrl: effectiveRepoUrl,
           lastPushed: now.toISOString(),
           lastSynced: now.toISOString(),
@@ -1304,11 +1581,14 @@ async function startServer() {
 
         return res.json({
           success: true,
-          message: `Pomyślnie wysłano zaktualizowaną bazę (${docToPush?.rows?.length || 461} modeli) oraz ${uploadsCount} zdjęć z folderu public/uploads/ do GitHub (${owner}/${repo})! Vercel automatycznie rozpoczyna publikację online.`,
+          message: pushFullCode
+            ? `Pomyślnie wysłano CAŁY KOD PROGRAMU (pliki aplikacji, interfejs, serwer i bazę) do GitHub (${owner}/${repo})! Vercel natychmiast rozpoczął budowanie i publikację nowej wersji online.`
+            : `Pomyślnie wysłano zaktualizowaną bazę (${docToPush?.rows?.length || 461} modeli) oraz ${uploadsCount} zdjęć z folderu public/uploads/ do GitHub (${owner}/${repo})! Vercel automatycznie rozpoczyna publikację online.`,
           uploadsCount,
           totalRows: docToPush?.rows?.length || 461,
           commitSha,
           version: versionStr,
+          isFullCode: !!pushFullCode,
         });
       } finally {
         // Sanitize remote URL so token is never saved in .git/config
@@ -1330,13 +1610,10 @@ async function startServer() {
     res.status(404).json({ success: false, error: 'Endpoint not found', path: req.path });
   });
 
-  // Production detection:
-  // In dev mode (tsx server.ts), Vite dev server runs as middleware for HMR and instant code editing.
-  // In production (node dist/server.cjs or NODE_ENV=production), pre-built static assets in dist/ are served.
-  const isProduction =
-    process.env.NODE_ENV === 'production' ||
-    (process.env.NODE_ENV !== 'development' && Boolean(process.env.K_SERVICE)) ||
-    (typeof __filename !== 'undefined' && __filename.endsWith('.cjs'));
+  // Production vs Dev detection:
+  // In production (NODE_ENV=production), serve static assets directly with gzip compression.
+  // In development, mount Vite middleware.
+  const isProduction = process.env.NODE_ENV === 'production';
 
   const serveStaticAssets = () => {
     const candidatePaths = [
@@ -1350,14 +1627,23 @@ async function startServer() {
 
     if (fs.existsSync(path.join(distPath, 'index.html'))) {
       console.log(`📦 Serving production static assets from: ${distPath}`);
+      // Cache fingerprinted assets, but never cache index.html
+      if (fs.existsSync(path.join(distPath, 'assets'))) {
+        app.use('/assets', express.static(path.join(distPath, 'assets'), {
+          maxAge: '7d',
+          immutable: true,
+        }));
+      }
       app.use(express.static(distPath, {
-        maxAge: '1d',
-        etag: true,
-        index: 'index.html',
+        maxAge: '1h',
+        index: false,
       }));
       app.get('*', (req, res, next) => {
         const indexPath = path.join(distPath, 'index.html');
         if (fs.existsSync(indexPath)) {
+          res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+          res.setHeader('Pragma', 'no-cache');
+          res.setHeader('Expires', '0');
           res.sendFile(indexPath, (err) => {
             if (err && !res.headersSent) {
               next(err);
@@ -1404,81 +1690,39 @@ async function startServer() {
     res.status(500).json({ success: false, error: err?.message || 'Wewnętrzny błąd serwera' });
   });
 
-  // Primary listening port:
-  // Port 3000 is always bound for internal reverse-proxy routing
-  const DEFAULT_PORT = 3000;
-  const server = app.listen(DEFAULT_PORT, '0.0.0.0', () => {
-    console.log(`🚀 Cennik server running on http://0.0.0.0:${DEFAULT_PORT} (production: ${isProduction})`);
+  // Port 3000 is hardcoded by infrastructure and accessed via internal nginx reverse proxy
+  const PORT = 3000;
+  const server = app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Server running on http://0.0.0.0:${PORT} (production: ${process.env.NODE_ENV === 'production'})`);
   });
 
   server.on('error', (err: any) => {
-    if (err && err.code === 'EADDRINUSE') {
-      console.log(`[Info] Port ${DEFAULT_PORT} is already bound; server continues.`);
-    } else {
-      console.error(`Error on port ${DEFAULT_PORT}:`, err);
-    }
+    console.error('[Server Listen Error]:', err);
   });
 
-  // Cloud Run / container environment listener:
-  // If deployed to Cloud Run where PORT is provided (e.g. 8080) and differs from 3000,
-  // also bind that port so Cloud Run container health checks and ingress routing succeed.
-  let cloudRunServer: any = null;
-  const envPortStr = process.env.PORT;
-  const envPort = envPortStr ? parseInt(envPortStr, 10) : null;
-  if (envPort && envPort !== DEFAULT_PORT && !isNaN(envPort)) {
-    try {
-      cloudRunServer = app.listen(envPort, '0.0.0.0', () => {
-        console.log(`🚀 Cloud Run environment listener active on http://0.0.0.0:${envPort}`);
-      });
-      cloudRunServer.on('error', (err: any) => {
-        if (err && err.code === 'EADDRINUSE') {
-          console.log(`[Info] Port ${envPort} occupied by environment proxy; internal traffic routed to ${DEFAULT_PORT}.`);
-        } else {
-          console.warn(`[Cloud Run] Listener warning on port ${envPort}:`, err);
-        }
-      });
-    } catch (bindErr) {
-      console.log(`[Info] Handled secondary port ${envPort} binding:`, bindErr);
-    }
-  }
-
-  // Graceful shutdown handling for Cloud Run & container orchestration
-  const shutdown = (signal: string) => {
-    console.log(`${signal} signal received: closing HTTP servers gracefully`);
-    try {
-      if (typeof (server as any).closeIdleConnections === 'function') {
-        (server as any).closeIdleConnections();
-      }
-      if (cloudRunServer && typeof cloudRunServer.closeIdleConnections === 'function') {
-        cloudRunServer.closeIdleConnections();
-      }
-      server.close(() => {
-        if (cloudRunServer) {
-          try { cloudRunServer.close(); } catch (_) {}
-        }
-        console.log('HTTP server closed successfully');
-        process.exit(0);
-      });
-    } catch (_) {
+  // Graceful shutdown handling for Cloud Run container lifecycle
+  process.on('SIGTERM', () => {
+    console.log('SIGTERM signal received: closing HTTP server');
+    server.close(() => {
+      console.log('HTTP server closed gracefully');
       process.exit(0);
-    }
-    setTimeout(() => {
-      console.warn('Forcing process exit after shutdown timeout');
-      process.exit(0);
-    }, 3000).unref();
-  };
+    });
+  });
 
-  process.on('SIGTERM', () => shutdown('SIGTERM'));
-  process.on('SIGINT', () => shutdown('SIGINT'));
+  process.on('SIGINT', () => {
+    console.log('SIGINT signal received: closing HTTP server');
+    server.close(() => {
+      process.exit(0);
+    });
+  });
 }
 
-// Global process error handlers to prevent Cloud Run container crashes
 process.on('uncaughtException', (err) => {
-  console.error('[Process] Uncaught Exception:', err);
+  console.error('[Uncaught Exception]:', err);
 });
 
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('[Process] Unhandled Rejection at:', promise, 'reason:', reason);
+process.on('unhandledRejection', (reason) => {
+  console.error('[Unhandled Rejection]:', reason);
 });
 
 startServer().catch((err) => {

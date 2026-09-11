@@ -319,10 +319,10 @@ export const BackupRestoreSettings: React.FC<BackupRestoreSettingsProps> = ({
   const handleDownloadCatalogJson = () => {
     try {
       const dataStr = 'data:text/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(document, null, 2));
-      const a = document.createElement('a');
+      const a = window.document.createElement('a');
       a.setAttribute('href', dataStr);
       a.setAttribute('download', 'data-catalog.json');
-      document.body.appendChild(a);
+      window.document.body.appendChild(a);
       a.click();
       a.remove();
       showSuccess('Pobrano plik data-catalog.json ze wszystkimi zdjęciami i cenami.');

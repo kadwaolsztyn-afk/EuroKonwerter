@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { MainTab, ViewMode, ImportedDocument, ExtractedImage, DocumentRow } from './types';
+import { MainTab, ViewMode, ImportedDocument, ExtractedImage, DocumentRow, SettingsTab } from './types';
 import { SAMPLE_HTML_CONTENT, SAMPLE_HTML_TITLE } from './data/sampleDocument';
 import { INITIAL_35_BRANDS_DOCUMENT } from './data/initialCatalog';
 import { parseHtmlDocument } from './utils/htmlParser';
@@ -13,7 +13,7 @@ import {
   getSynchronousInitialDocument,
 } from './utils/storage';
 import { mergeDocuments } from './utils/documentMerger';
-import { uploadImageToProgramFolder } from './utils/imageUpload';
+import { uploadImageToProgramFolder, compressImageFile } from './utils/imageUpload';
 import { pushDatabaseToGitHub, getGitHubSyncConfig, pullDatabaseFromGitHub } from './utils/githubSync';
 import { checkLinkServerStatus, pullDatabaseFromLinkServer } from './utils/linkSync';
 import { Header } from './components/Header';
@@ -23,6 +23,7 @@ import { WholesaleView } from './components/WholesaleView';
 import { FileUploadModal } from './components/FileUploadModal';
 import { PasswordLockModal } from './components/PasswordLockModal';
 import { DesktopBuildInfoModal } from './components/DesktopBuildInfoModal';
+import { AppStartupLoader } from './components/AppStartupLoader';
 import { CheckCircle2, RotateCcw, Sparkles, X, AlertTriangle } from 'lucide-react';
 import { syncSecurityPasswordsFromServer } from './utils/security';
 
@@ -30,12 +31,20 @@ export default function App() {
   const [mainTab, setMainTab] = useState<MainTab>('client');
   const [currentDocument, setCurrentDocument] = useState<ImportedDocument>(getSynchronousInitialDocument);
   const [viewMode, setViewMode] = useState<ViewMode>('grid');
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>('basic');
   const [zoom, setZoom] = useState<number>(1.0);
   const [isUploadOpen, setIsUploadOpen] = useState(false);
   const [isDesktopInfoOpen, setIsDesktopInfoOpen] = useState(false);
   const [isSavedInMemory, setIsSavedInMemory] = useState(true);
   const [notification, setNotification] = useState<string | null>(null);
   const [isRestoreModalOpen, setIsRestoreModalOpen] = useState(false);
+
+  // Application Startup Loading State with Percentage Progress
+  const [isStartupLoading, setIsStartupLoading] = useState<boolean>(false);
+  const [startupProgress, setStartupProgress] = useState<number>(100);
+  const [startupStage, setStartupStage] = useState<string>('Gotowe! Cennik aktywny');
+  const [startupElapsed, setStartupElapsed] = useState<number>(0);
+  const [isStartupTakingLonger, setIsStartupTakingLonger] = useState<boolean>(false);
 
   // Password Protection for 'wholesale' and 'settings' (starts locked by default)
   const [isWholesaleUnlocked, setIsWholesaleUnlocked] = useState<boolean>(false);
@@ -120,48 +129,108 @@ export default function App() {
     showNotification('Dostęp chroniony został zablokowany');
   };
 
-  // 1. Initial Load from local storage and automatic GitHub download if enabled in settings
-  useEffect(() => {
-    let isCancelled = false;
-
-    // Sync latest passwords from backend if online
-    syncSecurityPasswordsFromServer().catch(() => {});
-
-    async function initCatalogFromStorage() {
-      try {
-        const savedDoc = await loadDocumentFromStorage();
-        if (savedDoc && savedDoc.rows && savedDoc.rows.length > 0 && !isCancelled) {
-          setCurrentDocument(savedDoc);
-          setIsSavedInMemory(true);
-        }
-
-        // Automatic GitHub sync on startup if enabled in settings ("ptaszek w okienku ustawień")
-        const ghCfg = getGitHubSyncConfig();
-        if (ghCfg.enabled && ghCfg.checkOnStartup && !isCancelled) {
-          try {
-            console.log('[App Startup] checkOnStartup is active, fetching latest database from GitHub...');
-            const pullRes = await pullDatabaseFromGitHub(ghCfg);
-            if (pullRes.success && pullRes.document && !isCancelled) {
-              setCurrentDocument(pullRes.document);
-              setIsSavedInMemory(true);
-              showNotification('Baza została zaktualizowana');
-            }
-          } catch (ghErr) {
-            console.warn('[App Startup] Automatic GitHub download failed:', ghErr);
-          }
-        }
-      } catch (err) {
-        console.error('Error reading catalog storage:', err);
-      }
+  // 1. Initial Load and Startup Flow with Percentage Progress Tracking
+  const initCatalog = useCallback(async (isDiagnostic = false) => {
+    if (isDiagnostic) {
+      setIsStartupLoading(true);
+      setStartupElapsed(0);
+      setIsStartupTakingLonger(false);
+      setStartupProgress(15);
+      setStartupStage('Inicjalizacja środowiska i pamięci podręcznej...');
     }
 
-    initCatalogFromStorage();
+    const startTime = Date.now();
+
+    // Live elapsed timer: updates every 100ms
+    const elapsedInterval = setInterval(() => {
+      const elapsedSec = (Date.now() - startTime) / 1000;
+      setStartupElapsed(elapsedSec);
+      if (elapsedSec >= 2.8) {
+        setIsStartupTakingLonger(true);
+      }
+    }, 100);
+
+    // Smooth progress micro-ticker
+    const progressInterval = setInterval(() => {
+      setStartupProgress((prev) => {
+        if (prev < 98) {
+          return prev + 1;
+        }
+        return prev;
+      });
+    }, isDiagnostic ? 80 : 60);
+
+    // Safety timeout: under NO circumstance can startup screen remain active longer than 2.0s
+    const safetyTimeout = setTimeout(() => {
+      setIsStartupLoading(false);
+      clearInterval(elapsedInterval);
+      clearInterval(progressInterval);
+    }, 2000);
+
+    try {
+      // Step 1: Security passwords check (non-blocking)
+      syncSecurityPasswordsFromServer().catch(() => {});
+      if (isDiagnostic) await new Promise((r) => setTimeout(r, 180));
+      setStartupProgress(40);
+      setStartupStage('Weryfikacja lokalnej pamięci podręcznej i bazy...');
+
+      // Step 2: Load document from storage (local-first, fast)
+      const savedDoc = await loadDocumentFromStorage();
+      if (savedDoc && savedDoc.rows && savedDoc.rows.length > 0) {
+        setCurrentDocument(savedDoc);
+        setIsSavedInMemory(true);
+      }
+      if (isDiagnostic) await new Promise((r) => setTimeout(r, 180));
+      setStartupProgress(75);
+      setStartupStage('Wczytywanie bazy modeli samochodów i multimediów...');
+
+      // Step 3: Automatic GitHub / cloud sync if enabled (async)
+      const ghCfg = getGitHubSyncConfig();
+      if (ghCfg.enabled && ghCfg.checkOnStartup) {
+        setStartupProgress(88);
+        setStartupStage('Sprawdzanie aktualizacji w chmurze...');
+        pullDatabaseFromGitHub(ghCfg).then((pullRes) => {
+          if (pullRes.success && pullRes.document) {
+            setCurrentDocument(pullRes.document);
+            setIsSavedInMemory(true);
+            showNotification('Baza została zaktualizowana');
+          }
+        }).catch((ghErr) => {
+          console.warn('[App Startup] Automatic GitHub download notice:', ghErr);
+        });
+      }
+
+      setStartupProgress(100);
+      setStartupStage('Gotowe! Uruchamianie cennika...');
+
+      setTimeout(() => {
+        clearTimeout(safetyTimeout);
+        setIsStartupLoading(false);
+        clearInterval(elapsedInterval);
+        clearInterval(progressInterval);
+      }, isDiagnostic ? 250 : 120);
+
+    } catch (err) {
+      console.error('Error reading catalog storage during startup:', err);
+      clearTimeout(safetyTimeout);
+      // Safe fallback so user is never blocked
+      const fallback = getSynchronousInitialDocument();
+      setCurrentDocument(fallback);
+      setStartupProgress(100);
+      setIsStartupLoading(false);
+      clearInterval(elapsedInterval);
+      clearInterval(progressInterval);
+    }
+  }, []);
+
+  useEffect(() => {
+    initCatalog(false);
 
     const handleOnline = () => {
       const ghCfg = getGitHubSyncConfig();
-      if (ghCfg.enabled && ghCfg.checkOnStartup && !isCancelled) {
+      if (ghCfg.enabled && ghCfg.checkOnStartup) {
         pullDatabaseFromGitHub(ghCfg).then((pullRes) => {
-          if (pullRes.success && pullRes.document && !isCancelled) {
+          if (pullRes.success && pullRes.document) {
             setCurrentDocument(pullRes.document);
             setIsSavedInMemory(true);
             showNotification('Baza została zaktualizowana');
@@ -172,10 +241,33 @@ export default function App() {
     window.addEventListener('online', handleOnline);
 
     return () => {
-      isCancelled = true;
       window.removeEventListener('online', handleOnline);
     };
-  }, []);
+  }, [initCatalog]);
+
+  const handleBypassToLocal = () => {
+    setIsStartupLoading(false);
+    const localDoc = getSynchronousInitialDocument();
+    setCurrentDocument(localDoc);
+    setIsSavedInMemory(true);
+    showNotification('Otwarto cennik natychmiast z pamięci urządzenia (tryb ekspresowy)');
+  };
+
+  const handleRetryStartup = () => {
+    initCatalog(false);
+  };
+
+  const handleResetStorageStartup = () => {
+    try {
+      localStorage.clear();
+      sessionStorage.clear();
+    } catch (_) {}
+    window.location.reload();
+  };
+
+  const handleTriggerStartupDiagnostic = () => {
+    initCatalog(true);
+  };
 
   // Cross-device link sync: checks lightweight /api/catalog/status on focus and periodically
   useEffect(() => {
@@ -329,10 +421,15 @@ export default function App() {
         const url = await uploadImageToProgramFolder(f, { suggestedFilename: f.name });
         newExtracted.push({ name: f.name, url });
       } catch {
-        const bytes = new Uint8Array(await f.arrayBuffer());
-        const mime = getMimeTypeFromExt(f.name);
-        const dataUrl = uint8ArrayToDataUrl(bytes, mime);
-        newExtracted.push({ name: f.name, url: dataUrl });
+        try {
+          const compressedDataUrl = await compressImageFile(f);
+          newExtracted.push({ name: f.name, url: compressedDataUrl });
+        } catch {
+          const bytes = new Uint8Array(await f.arrayBuffer());
+          const mime = getMimeTypeFromExt(f.name);
+          const dataUrl = uint8ArrayToDataUrl(bytes, mime);
+          newExtracted.push({ name: f.name, url: dataUrl });
+        }
       }
     }
 
@@ -448,6 +545,7 @@ export default function App() {
   };
 
   const [isPushingGH, setIsPushingGH] = useState(false);
+  const [isPullingGH, setIsPullingGH] = useState(false);
 
   const handleSaveToServer = async () => {
     if (!currentDocument) return;
@@ -466,6 +564,7 @@ export default function App() {
     const config = getGitHubSyncConfig();
     if (!config.githubToken) {
       setMainTab('settings');
+      setSettingsTab('advanced');
       setViewMode('backup');
       showNotification(
         'Wprowadź token GitHub (Personal Access Token) w sekcji Kopia i Przywracanie Bazy, aby móc automatycznie publikować na GitHub i Vercel.'
@@ -490,6 +589,25 @@ export default function App() {
     }
   };
 
+  const handlePullFromGitHub = async () => {
+    try {
+      setIsPullingGH(true);
+      const res = await pullDatabaseFromGitHub();
+      if (res.success && res.document) {
+        await updateAndPersistDocument(res.document);
+        showNotification(
+          res.message || `Pomyślnie pobrano najnowszą bazę z GitHub (${res.totalRows || res.document.rows?.length || 0} pozycji)!`
+        );
+      } else {
+        showNotification(`Pobieranie z GitHub: ${res.error || 'Brak danych lub repozytorium niedostępne'}`);
+      }
+    } catch (err: any) {
+      showNotification(`Błąd pobierania z GitHub: ${err?.message || 'Nieznany błąd'}`);
+    } finally {
+      setIsPullingGH(false);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-amber-400 selection:text-slate-950 w-full overflow-x-hidden">
       {/* Toast Notification */}
@@ -507,6 +625,8 @@ export default function App() {
         currentDocument={currentDocument}
         viewMode={viewMode}
         setViewMode={setViewMode}
+        settingsTab={settingsTab}
+        setSettingsTab={setSettingsTab}
         zoom={zoom}
         setZoom={setZoom}
         onOpenUpload={() => setIsUploadOpen(true)}
@@ -547,10 +667,17 @@ export default function App() {
             document={currentDocument}
             viewMode={viewMode}
             zoom={zoom}
+            setZoom={setZoom}
+            settingsTab={settingsTab}
+            onSettingsTabChange={setSettingsTab}
+            onViewModeChange={setViewMode}
             onBatchAttachImages={handleBatchAttachImages}
             onOpenUpload={() => setIsUploadOpen(true)}
+            onOpenDesktopBuildInfo={() => setIsDesktopInfoOpen(true)}
             onExportExcel={handleExportExcel}
             onExportHtml={handleExportHtml}
+            onPrint={handlePrint}
+            onResetDocument={handleOpenRestoreModal}
             onUpdateRowImage={handleUpdateRowImage}
             onUpdateRows={handleUpdateRows}
             onRestoreBackup={(restoredDoc) => {
@@ -559,7 +686,12 @@ export default function App() {
             }}
             onResetTo35Brands={handlePerformReset}
             onSaveToServer={handleSaveToServer}
+            onPushToGitHub={handlePushToGitHub}
+            isPushingToGitHub={isPushingGH}
+            onPullFromGitHub={handlePullFromGitHub}
+            isPullingFromGitHub={isPullingGH}
             onNotification={showNotification}
+            onTestStartupLoader={handleTriggerStartupDiagnostic}
           />
         )}
       </main>
@@ -638,6 +770,19 @@ export default function App() {
         onDocumentImported={handleDocumentImported}
         existingItemsCount={currentDocument.totalRows}
       />
+
+      {/* Percentage-based Startup & Diagnostic Loading Screen */}
+      {isStartupLoading && (
+        <AppStartupLoader
+          progress={startupProgress}
+          stageText={startupStage}
+          onBypassToLocal={handleBypassToLocal}
+          onRetry={handleRetryStartup}
+          onResetStorage={handleResetStorageStartup}
+          elapsedSeconds={startupElapsed}
+          isTakingLonger={isStartupTakingLonger}
+        />
+      )}
     </div>
   );
 }

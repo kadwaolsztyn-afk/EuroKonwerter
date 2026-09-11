@@ -2,6 +2,8 @@ import React, { useState, useMemo, useRef } from 'react';
 import { Search, Image as ImageIcon, ExternalLink, X, Car, Filter, Upload, ImagePlus, Sparkles, Trash2, Lightbulb, Tv, Info } from 'lucide-react';
 import { ImportedDocument, DocumentRow, ExtractedImage } from '../types';
 import { uploadImageToProgramFolder } from '../utils/imageUpload';
+import { filterCatalogRows } from '../utils/searchEngine';
+import { normalizeMultimediaItems } from '../utils/multimediaUtils';
 
 interface ImageGalleryViewProps {
   document: ImportedDocument;
@@ -17,7 +19,7 @@ export const ImageGalleryView: React.FC<ImageGalleryViewProps> = ({
   const [search, setSearch] = useState('');
   const [selectedBrand, setSelectedBrand] = useState('all');
   const [selectedRow, setSelectedRow] = useState<DocumentRow | null>(null);
-  const [galleryModalTab, setGalleryModalTab] = useState<'lighting' | 'multimedia'>('lighting');
+  const [galleryModalTab, setGalleryModalTab] = useState<string>('lighting');
   const [editingRowForUpload, setEditingRowForUpload] = useState<DocumentRow | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -37,19 +39,12 @@ export const ImageGalleryView: React.FC<ImageGalleryViewProps> = ({
   }, [document]);
 
   const filtered = useMemo(() => {
-    return document.rows.filter((r) => {
-      if (selectedBrand !== 'all' && r.brand !== selectedBrand) return false;
-      if (!search.trim()) return true;
-
-      const q = search.toLowerCase();
-      return (
-        r.brand.toLowerCase().includes(q) ||
-        r.model.toLowerCase().includes(q) ||
-        r.factoryCode.toLowerCase().includes(q) ||
-        r.years.toLowerCase().includes(q)
-      );
-    });
-  }, [document, selectedBrand, search]);
+    return filterCatalogRows(document.rows, {
+      searchQuery: search,
+      selectedBrand,
+      allBrands,
+    }).filteredRows;
+  }, [document.rows, selectedBrand, search, allBrands]);
 
   const [galleryUrlInput, setGalleryUrlInput] = useState('');
 
@@ -74,9 +69,18 @@ export const ImageGalleryView: React.FC<ImageGalleryViewProps> = ({
     }
   };
 
-  const handleSaveGalleryUrl = (row: DocumentRow) => {
+  const handleSaveGalleryUrl = async (row: DocumentRow) => {
     if (!galleryUrlInput.trim() || !onUpdateRowImage) return;
-    const trimmed = galleryUrlInput.trim();
+    let trimmed = galleryUrlInput.trim();
+    if (trimmed.startsWith('data:image/')) {
+      try {
+        trimmed = await uploadImageToProgramFolder(trimmed, {
+          rowId: row.id,
+          brand: row.brand,
+          model: row.model,
+        });
+      } catch {}
+    }
     onUpdateRowImage(row.id, trimmed);
     setSelectedRow({ ...row, imageUrl: trimmed });
     setGalleryUrlInput('');
@@ -249,32 +253,45 @@ export const ImageGalleryView: React.FC<ImageGalleryViewProps> = ({
             </div>
 
             {/* Modal Tabs */}
-            <div className="flex border-b border-slate-800 bg-slate-950/70 px-4 pt-2.5 gap-2">
-              <button
-                type="button"
-                onClick={() => setGalleryModalTab('lighting')}
-                className={`pb-2.5 px-3 text-xs font-bold flex items-center gap-1.5 border-b-2 transition-all cursor-pointer ${
-                  galleryModalTab === 'lighting'
-                    ? 'border-amber-400 text-amber-300 bg-amber-400/10 rounded-t-lg'
-                    : 'border-transparent text-slate-400 hover:text-slate-200'
-                }`}
-              >
-                <Lightbulb className="w-3.5 h-3.5" />
-                <span>Oświetlenie</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setGalleryModalTab('multimedia')}
-                className={`pb-2.5 px-3 text-xs font-bold flex items-center gap-1.5 border-b-2 transition-all cursor-pointer ${
-                  galleryModalTab === 'multimedia'
-                    ? 'border-amber-400 text-amber-300 bg-amber-400/10 rounded-t-lg'
-                    : 'border-transparent text-slate-400 hover:text-slate-200'
-                }`}
-              >
-                <Tv className="w-3.5 h-3.5" />
-                <span>Multimedia</span>
-              </button>
-            </div>
+            {(() => {
+              const mmItems = selectedRow ? normalizeMultimediaItems(selectedRow) : [];
+              return (
+                <div className="flex border-b border-slate-800 bg-slate-950/70 px-4 pt-2.5 gap-2 overflow-x-auto no-scrollbar">
+                  <button
+                    type="button"
+                    onClick={() => setGalleryModalTab('lighting')}
+                    className={`pb-2.5 px-3 text-xs font-bold flex items-center gap-1.5 border-b-2 transition-all cursor-pointer whitespace-nowrap shrink-0 ${
+                      galleryModalTab === 'lighting'
+                        ? 'border-amber-400 text-amber-300 bg-amber-400/10 rounded-t-lg'
+                        : 'border-transparent text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    <Lightbulb className="w-3.5 h-3.5" />
+                    <span>Oświetlenie</span>
+                  </button>
+
+                  {mmItems.map((item, idx) => {
+                    const isTabActive = galleryModalTab === item.id || (galleryModalTab === 'multimedia' && idx === 0);
+                    const title = item.title?.trim() || (mmItems.length > 1 ? `Multimedia ${idx + 1}` : 'Multimedia');
+                    return (
+                      <button
+                        key={item.id}
+                        type="button"
+                        onClick={() => setGalleryModalTab(item.id)}
+                        className={`pb-2.5 px-3 text-xs font-bold flex items-center gap-1.5 border-b-2 transition-all cursor-pointer whitespace-nowrap shrink-0 ${
+                          isTabActive
+                            ? 'border-amber-400 text-amber-300 bg-amber-400/10 rounded-t-lg'
+                            : 'border-transparent text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        <Tv className="w-3.5 h-3.5" />
+                        <span>{title}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              );
+            })()}
 
             {galleryModalTab === 'lighting' ? (
               <>
@@ -363,66 +380,83 @@ export const ImageGalleryView: React.FC<ImageGalleryViewProps> = ({
                   </div>
                 </div>
               </>
-            ) : selectedRow.multimediaImageUrl || selectedRow.multimediaVersion || selectedRow.multimediaPriceClient ? (
-              <>
-                <div className="p-6 bg-slate-950 flex justify-center items-center min-h-[220px]">
-                  {selectedRow.multimediaImageUrl ? (
-                    <img
-                      src={selectedRow.multimediaImageUrl}
-                      alt={`Multimedia ${selectedRow.brand} ${selectedRow.model}`}
-                      className="max-h-[240px] max-w-full object-contain rounded"
-                      referrerPolicy="no-referrer"
-                    />
-                  ) : (
-                    <div className="text-slate-500 text-center flex flex-col items-center gap-2">
-                      <Tv className="w-12 h-12 text-slate-700" />
-                      <p className="text-xs">Brak zdjęcia systemu multimedialnego</p>
-                    </div>
-                  )}
-                </div>
+            ) : (() => {
+              const mmItems = selectedRow ? normalizeMultimediaItems(selectedRow) : [];
+              const activeMm = mmItems.find((m) => m.id === galleryModalTab) || mmItems[0];
+              const hasData = Boolean(
+                activeMm &&
+                  (activeMm.imageUrl ||
+                    activeMm.version ||
+                    activeMm.priceClient ||
+                    activeMm.priceBroker ||
+                    activeMm.notes)
+              );
 
-                <div className="p-5 bg-slate-900 space-y-3 text-xs border-t border-slate-800">
-                  <div className="grid grid-cols-2 gap-3 text-slate-300">
-                    <div>
-                      <span className="text-slate-500 block text-[11px]">Wersja Systemu:</span>
-                      <strong className="text-white font-mono">{selectedRow.multimediaVersion || 'Standard'}</strong>
+              if (!activeMm || !hasData) {
+                return (
+                  <div className="p-8 sm:p-10 flex flex-col items-center justify-center text-center bg-slate-950">
+                    <div className="w-14 h-14 rounded-2xl bg-slate-900 border border-slate-800 text-amber-400 flex items-center justify-center mb-3">
+                      <Tv className="w-7 h-7" />
                     </div>
-                    <div>
-                      <span className="text-slate-500 block text-[11px]">Cena Klient:</span>
-                      <strong className="text-sky-400 font-mono">{selectedRow.multimediaPriceClient || '-'}</strong>
+                    <h4 className="text-lg font-bold text-white mb-1.5">
+                      Brak informacji
+                    </h4>
+                    <p className="text-slate-400 text-xs max-w-sm mb-4">
+                      Dla wybranego modelu <strong className="text-white">{selectedRow.brand} {selectedRow.model}</strong> w zakładce <strong className="text-amber-400">{activeMm?.title || 'Multimedia'}</strong> brak danych.
+                    </p>
+                    <div className="inline-flex items-center gap-1.5 bg-slate-900 border border-slate-800 px-3 py-1.5 rounded-lg text-xs text-slate-400">
+                      <Info className="w-3.5 h-3.5 text-amber-400" />
+                      <span>Kategoria Multimedia</span>
                     </div>
-                    {selectedRow.multimediaPriceBroker && (
-                      <div>
-                        <span className="text-slate-500 block text-[11px]">Cena Pośrednik / Hurt:</span>
-                        <strong className="text-amber-400 font-mono">{selectedRow.multimediaPriceBroker}</strong>
-                      </div>
-                    )}
-                    {selectedRow.multimediaNotes && (
-                      <div className="col-span-2">
-                        <span className="text-slate-500 block text-[11px]">Uwagi / Zakres adaptacji:</span>
-                        <p className="text-slate-200 text-xs mt-0.5">{selectedRow.multimediaNotes}</p>
+                  </div>
+                );
+              }
+
+              return (
+                <>
+                  <div className="p-6 bg-slate-950 flex justify-center items-center min-h-[220px]">
+                    {activeMm.imageUrl ? (
+                      <img
+                        src={activeMm.imageUrl}
+                        alt={`Multimedia ${selectedRow.brand} ${selectedRow.model}`}
+                        className="max-h-[240px] max-w-full object-contain rounded"
+                        referrerPolicy="no-referrer"
+                      />
+                    ) : (
+                      <div className="text-slate-500 text-center flex flex-col items-center gap-2">
+                        <Tv className="w-12 h-12 text-slate-700" />
+                        <p className="text-xs">Brak zdjęcia systemu multimedialnego</p>
                       </div>
                     )}
                   </div>
-                </div>
-              </>
-            ) : (
-              <div className="p-8 sm:p-10 flex flex-col items-center justify-center text-center bg-slate-950">
-                <div className="w-14 h-14 rounded-2xl bg-slate-900 border border-slate-800 text-amber-400 flex items-center justify-center mb-3">
-                  <Tv className="w-7 h-7" />
-                </div>
-                <h4 className="text-lg font-bold text-white mb-1.5">
-                  Brak informacji
-                </h4>
-                <p className="text-slate-400 text-xs max-w-sm mb-4">
-                  Dla wybranego modelu <strong className="text-white">{selectedRow.brand} {selectedRow.model}</strong> brak danych w zakładce Multimedia.
-                </p>
-                <div className="inline-flex items-center gap-1.5 bg-slate-900 border border-slate-800 px-3 py-1.5 rounded-lg text-xs text-slate-400">
-                  <Info className="w-3.5 h-3.5 text-amber-400" />
-                  <span>Kategoria Multimedia</span>
-                </div>
-              </div>
-            )}
+
+                  <div className="p-5 bg-slate-900 space-y-3 text-xs border-t border-slate-800">
+                    <div className="grid grid-cols-2 gap-3 text-slate-300">
+                      <div>
+                        <span className="text-slate-500 block text-[11px]">Wersja Systemu:</span>
+                        <strong className="text-white font-mono">{activeMm.version || activeMm.title || 'Standard'}</strong>
+                      </div>
+                      <div>
+                        <span className="text-slate-500 block text-[11px]">Cena Klient:</span>
+                        <strong className="text-sky-400 font-mono">{activeMm.priceClient || '-'}</strong>
+                      </div>
+                      {activeMm.priceBroker && (
+                        <div>
+                          <span className="text-slate-500 block text-[11px]">Cena Pośrednik / Hurt:</span>
+                          <strong className="text-amber-400 font-mono">{activeMm.priceBroker}</strong>
+                        </div>
+                      )}
+                      {activeMm.notes && (
+                        <div className="col-span-2">
+                          <span className="text-slate-500 block text-[11px]">Uwagi / Zakres adaptacji:</span>
+                          <p className="text-slate-200 text-xs mt-0.5">{activeMm.notes}</p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </>
+              );
+            })()}
           </div>
         </div>
       )}

@@ -38,12 +38,20 @@ function mergeWithInitialCatalog(doc: ImportedDocument): ImportedDocument {
     );
     const localNeedsPhoto = Boolean(
       !row.imageUrl ||
+      row.imageUrl.startsWith('data:image/') ||
       row.imageUrl.startsWith('data:image/svg')
+    );
+
+    const localNeedsMmPhoto = Boolean(
+      !row.multimediaImageUrl ||
+      row.multimediaImageUrl.startsWith('data:image/') ||
+      row.multimediaImageUrl.startsWith('data:image/svg')
     );
 
     return {
       ...row,
       imageUrl: (initHasRealPhoto && localNeedsPhoto) ? initRow.imageUrl : (row.imageUrl || initRow.imageUrl),
+      multimediaImageUrl: (initRow.multimediaImageUrl && localNeedsMmPhoto) ? initRow.multimediaImageUrl : (row.multimediaImageUrl || initRow.multimediaImageUrl),
     };
   });
 
@@ -84,18 +92,20 @@ export async function forceResetMasterDatabase(): Promise<ImportedDocument> {
  */
 export function getSynchronousInitialDocument(): ImportedDocument {
   try {
-    const raw = localStorage.getItem(MASTER_CACHE_KEY) || localStorage.getItem(SNAPSHOT_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (parsed && Array.isArray(parsed.rows) && parsed.rows.length >= 460) {
-        if (parsed.importedAt && typeof parsed.importedAt === 'string') {
-          parsed.importedAt = new Date(parsed.importedAt);
+    if (typeof window !== 'undefined' && window.localStorage) {
+      const raw = window.localStorage.getItem(MASTER_CACHE_KEY) || window.localStorage.getItem(SNAPSHOT_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && Array.isArray(parsed.rows) && parsed.rows.length >= 460) {
+          if (parsed.importedAt && typeof parsed.importedAt === 'string') {
+            parsed.importedAt = new Date(parsed.importedAt);
+          }
+          parsed.rows = sanitizeDocumentRows(parsed.rows);
+          if (!isDocumentOutdated(parsed)) {
+            return parsed;
+          }
+          return mergeWithInitialCatalog(parsed);
         }
-        parsed.rows = sanitizeDocumentRows(parsed.rows);
-        if (!isDocumentOutdated(parsed)) {
-          return parsed;
-        }
-        return mergeWithInitialCatalog(parsed);
       }
     }
   } catch (e) {
@@ -483,6 +493,39 @@ export function sanitizeDocumentRows(rows: DocumentRow[]): DocumentRow[] {
 }
 
 /**
+ * Checks server for newer version in the background without blocking startup
+ */
+export async function checkAndApplyServerCatalogUpdate(localDoc: ImportedDocument): Promise<boolean> {
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 4000);
+    const statusRes = await fetch('/api/catalog/status', {
+      headers: { 'Cache-Control': 'no-cache' },
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+
+    if (statusRes.ok) {
+      const statusData = await statusRes.json();
+      const serverVersion = statusData.version;
+      const localVersion = localDoc?.version;
+
+      if (statusData.exists && serverVersion && serverVersion !== localVersion) {
+        console.log(`[Link Sync Background] Updating catalog (${serverVersion} vs ${localVersion})...`);
+        const serverDoc = await fetchMasterCatalogFromServer();
+        if (serverDoc && serverDoc.rows && serverDoc.rows.length >= 460) {
+          await saveDocumentToStorage(serverDoc);
+          return true;
+        }
+      }
+    }
+  } catch {
+    // Silent fail in background
+  }
+  return false;
+}
+
+/**
  * Loads the saved document state:
  * 1. Checks local IndexedDB (contains exact full document with photos & rows)
  * 2. Checks if local state is from an outdated version, and auto-upgrades if needed
@@ -521,10 +564,25 @@ export async function loadDocumentFromStorage(): Promise<ImportedDocument | null
     console.warn('Notice: IndexedDB read fallback to localStorage:', err);
   }
 
-  // 2. Check if the shared link server has an updated version across devices
+  // 2. If valid local document exists, return it IMMEDIATELY so app starts instantly
+  if (localDoc && localDoc.rows && localDoc.rows.length >= 460) {
+    if (!isDocumentOutdated(localDoc)) {
+      // Check server in the background without blocking the UI
+      setTimeout(() => {
+        checkAndApplyServerCatalogUpdate(localDoc).catch(() => {});
+      }, 500);
+      return localDoc;
+    }
+    console.log('Migrating local storage from outdated version to unified version:', CURRENT_DATABASE_VERSION);
+    const upgraded = mergeWithInitialCatalog(localDoc);
+    saveDocumentToStorage(upgraded).catch(() => {});
+    return upgraded;
+  }
+
+  // 3. Fast check if server has master catalog if local was absent
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 2500);
+    const timeoutId = setTimeout(() => controller.abort(), 1800);
     const statusRes = await fetch('/api/catalog/status', {
       headers: { 'Cache-Control': 'no-cache' },
       signal: controller.signal,
@@ -533,49 +591,16 @@ export async function loadDocumentFromStorage(): Promise<ImportedDocument | null
 
     if (statusRes.ok) {
       const statusData = await statusRes.json();
-      const serverVersion = statusData.version;
-      const localVersion = localDoc?.version;
-
-      // If server has a saved catalog and either local is missing/small or server has a different version
-      if (
-        statusData.exists &&
-        (!localDoc || localDoc.rows.length < 460 || (serverVersion && serverVersion !== localVersion))
-      ) {
-        console.log(
-          `[Link Sync] Server has newer/different catalog (${serverVersion} vs ${localVersion}). Downloading latest version from link...`
-        );
+      if (statusData.exists) {
         const serverDoc = await fetchMasterCatalogFromServer();
         if (serverDoc && serverDoc.rows && serverDoc.rows.length >= 460) {
-          await saveDocumentToStorage(serverDoc);
+          saveDocumentToStorage(serverDoc).catch(() => {});
           return serverDoc;
         }
       }
     }
   } catch {
-    // Offline or server not reachable in 2.5s, fall back seamlessly to local
-  }
-
-  if (localDoc && localDoc.rows && localDoc.rows.length > 0) {
-    if (!isDocumentOutdated(localDoc)) {
-      return localDoc;
-    }
-    console.log('Migrating local storage from outdated version to unified version:', CURRENT_DATABASE_VERSION);
-    if (localDoc.rows.length >= 460) {
-      const upgraded = mergeWithInitialCatalog(localDoc);
-      await saveDocumentToStorage(upgraded);
-      return upgraded;
-    }
-  }
-
-  // 3. Check server master catalog if local was absent
-  try {
-    const serverDoc = await fetchMasterCatalogFromServer();
-    if (serverDoc && serverDoc.rows && serverDoc.rows.length >= 460) {
-      await saveDocumentToStorage(serverDoc);
-      return serverDoc;
-    }
-  } catch (err) {
-    console.warn('Server catalog fetch error or offline:', err);
+    // Offline or server timeout, continue seamlessly
   }
 
   // 4. Check local synchronous storage fallback if not outdated

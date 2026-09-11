@@ -5,6 +5,10 @@ import fs from 'fs';
 
 const require = createRequire(import.meta.url);
 
+if (!process.env.NODE_ENV && (process.env.K_SERVICE || fs.existsSync(path.join(process.cwd(), 'dist')))) {
+  process.env.NODE_ENV = 'production';
+}
+
 const serverCjsPath = path.join(process.cwd(), 'dist', 'server.cjs');
 if (fs.existsSync(serverCjsPath)) {
   require(serverCjsPath);
@@ -16,4 +20,5 @@ if (fs.existsSync(serverCjsPath)) {
     process.exit(1);
   });
 }
+
 

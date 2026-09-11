@@ -1,5 +1,6 @@
 export type MainTab = 'client' | 'wholesale' | 'settings';
 export type ViewMode = 'original' | 'grid' | 'gallery' | 'analytics' | 'backup' | 'security';
+export type SettingsTab = 'basic' | 'advanced';
 
 export interface DocumentRow {
   id: number;
@@ -29,7 +30,18 @@ export interface DocumentRow {
   multimediaPriceBroker?: string;
   multimediaImageUrl?: string;
   multimediaNotes?: string;
+  multimediaItems?: MultimediaItem[];
   rawCells?: string[];
+}
+
+export interface MultimediaItem {
+  id: string;
+  title?: string;
+  version?: string;
+  priceClient?: string;
+  priceBroker?: string;
+  imageUrl?: string;
+  notes?: string;
 }
 
 export interface DocumentColumn {

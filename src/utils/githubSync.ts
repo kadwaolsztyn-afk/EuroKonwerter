@@ -280,7 +280,7 @@ export async function pullDatabaseFromGitHub(customConfig?: Partial<GitHubSyncCo
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ config }),
-    }, 35000);
+    }, 6000);
 
     const contentType = response.headers.get('content-type') || '';
     if (response.ok && contentType.includes('application/json')) {
@@ -1078,6 +1078,96 @@ export async function pullDatabaseFromUrl(targetUrl: string): Promise<{
     return {
       success: false,
       error: err?.message || 'Błąd podczas pobierania bazy z linku.',
+    };
+  }
+}
+
+/**
+ * Pushes the ENTIRE application source code, components, public assets, and database
+ * to GitHub repository, triggering Vercel full application re-build.
+ */
+export async function pushFullCodeToGitHub(
+  document: ImportedDocument,
+  token?: string,
+  customCommitMessage?: string
+): Promise<{
+  success: boolean;
+  message?: string;
+  error?: string;
+  commitSha?: string;
+  version?: string;
+}> {
+  const config = getGitHubSyncConfig();
+  const authToken = token || config.githubToken;
+  if (!authToken || !authToken.trim()) {
+    return {
+      success: false,
+      error: 'Brak tokena GitHub (Personal Access Token). Podaj token w oknie wysyłki, aby wysłać cały program.',
+    };
+  }
+
+  const parsedRepo = parseGitHubRepoUrl(config.repoUrl);
+  if (!parsedRepo) {
+    return {
+      success: false,
+      error: 'Nieprawidłowy adres repozytorium GitHub w konfiguracji.',
+    };
+  }
+
+  const now = new Date();
+  const version = `2026.03_ALL_v461_PROGRAM_${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`;
+
+  const docWithVersion: ImportedDocument = {
+    ...document,
+    version,
+    importedAt: now,
+  };
+
+  const commitMsg =
+    customCommitMessage ||
+    `Aktualizacja całego programu i bazy EuroKonwerter (${docWithVersion.rows.length} modeli, wersja ${version}) - Auto-deploy Vercel`;
+
+  try {
+    const serverRes = await fetch('/api/sync/github/push', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        document: docWithVersion,
+        token: authToken.trim(),
+        repoUrl: config.repoUrl,
+        commitMessage: commitMsg,
+        branch: 'main',
+        pushFullCode: true,
+      }),
+    });
+
+    const data = await serverRes.json().catch(() => ({}));
+    if (serverRes.ok && data && data.success) {
+      await saveGitHubSyncConfig({
+        lastPushed: now.toISOString(),
+        lastSynced: now.toISOString(),
+        lastVersion: data.version || version,
+        lastTotalRows: docWithVersion.rows.length,
+        githubToken: authToken.trim(),
+      });
+      await saveDocumentToStorage(docWithVersion);
+
+      return {
+        success: true,
+        message: data.message || `Pomyślnie wysłano cały kod programu do GitHub! Vercel automatycznie buduje nową wersję.`,
+        commitSha: data.commitSha,
+        version: data.version || version,
+      };
+    } else {
+      return {
+        success: false,
+        error: data.error || `Błąd serwera podczas wysyłania programu (${serverRes.statusText})`,
+      };
+    }
+  } catch (err: any) {
+    return {
+      success: false,
+      error: err?.message || 'Nie udało się połączyć z serwerem w celu wysłania kodu.',
     };
   }
 }

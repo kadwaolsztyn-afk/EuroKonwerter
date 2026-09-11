@@ -33,10 +33,13 @@ import {
   Table,
   Sparkles,
   Layers,
+  Plus,
 } from 'lucide-react';
-import { ImportedDocument, DocumentRow } from '../types';
+import { ImportedDocument, DocumentRow, MultimediaItem } from '../types';
 import { PriceModifierPanel } from './PriceModifierPanel';
 import { uploadImageToProgramFolder } from '../utils/imageUpload';
+import { filterCatalogRows, normalizeForSearch, toCompactSearch } from '../utils/searchEngine';
+import { normalizeMultimediaItems, syncMultimediaFields, createNewMultimediaItem } from '../utils/multimediaUtils';
 
 export type SortColumnKey =
   | 'lp'
@@ -305,7 +308,7 @@ interface PositionGridCardProps {
   row: DocumentRow;
   showBrokerPrices: boolean;
   readOnly?: boolean;
-  onOpenDetails: (row: DocumentRow, initialTab: 'lighting' | 'multimedia') => void;
+  onOpenDetails: (row: DocumentRow, initialTab?: 'lighting' | 'multimedia' | string) => void;
 }
 
 const PositionGridCardComponent: React.FC<PositionGridCardProps> = ({
@@ -583,7 +586,7 @@ interface DataGridTableRowProps {
   index: number;
   readOnly: boolean;
   showBrokerPrices: boolean;
-  onOpenDetails: (row: DocumentRow, initialTab: 'lighting' | 'multimedia') => void;
+  onOpenDetails: (row: DocumentRow, initialTab?: 'lighting' | 'multimedia' | string) => void;
   onOpenImageModal: (row: DocumentRow) => void;
   onUploadImageClick?: (row: DocumentRow) => void;
 }
@@ -751,15 +754,21 @@ const DataGridTableRow = React.memo<DataGridTableRowProps>(({
           type="button"
           onClick={() => onOpenDetails(row, 'multimedia')}
           className={`px-2.5 py-1 rounded-lg text-[10px] font-bold border transition-all inline-flex items-center gap-1 cursor-pointer ${
-            row.multimediaVersion || row.multimediaPriceClient || row.multimediaImageUrl
+            row.multimediaVersion || row.multimediaPriceClient || row.multimediaImageUrl || (row.multimediaItems && row.multimediaItems.length > 0)
               ? 'bg-amber-400/15 border-amber-400/40 text-amber-300 hover:bg-amber-400/25'
               : 'bg-slate-800/80 border-slate-700 text-slate-400 hover:text-white hover:bg-slate-800'
           }`}
           title="Otwórz i edytuj dane multimediów"
         >
           <Tv className="w-3 h-3" />
-          <span className="truncate max-w-[70px]">
-            {row.multimediaVersion ? row.multimediaVersion : !readOnly ? 'Konfiguruj' : 'Szczegóły'}
+          <span className="truncate max-w-[75px]">
+            {row.multimediaItems && row.multimediaItems.length > 1
+              ? `${row.multimediaItems.length} opcje`
+              : row.multimediaVersion
+              ? row.multimediaVersion
+              : !readOnly
+              ? 'Konfiguruj'
+              : 'Szczegóły'}
           </span>
         </button>
       </td>
@@ -800,14 +809,10 @@ export const InteractiveDataGrid: React.FC<InteractiveDataGridProps> = ({
     row: DocumentRow;
   } | null>(null);
   const [selectedDetailsRow, setSelectedDetailsRow] = useState<DocumentRow | null>(null);
-  const [detailsModalTab, setDetailsModalTab] = useState<'lighting' | 'multimedia'>('lighting');
+  const [detailsModalTab, setDetailsModalTab] = useState<string>('lighting');
   const [hasSearched, setHasSearched] = useState<boolean>(false);
 
-  const [editMultimediaVersion, setEditMultimediaVersion] = useState('');
-  const [editMultimediaPriceClient, setEditMultimediaPriceClient] = useState('');
-  const [editMultimediaPriceBroker, setEditMultimediaPriceBroker] = useState('');
-  const [editMultimediaImageUrl, setEditMultimediaImageUrl] = useState('');
-  const [editMultimediaNotes, setEditMultimediaNotes] = useState('');
+  const [editMultimediaItems, setEditMultimediaItems] = useState<MultimediaItem[]>([]);
   const [multimediaSavedToast, setMultimediaSavedToast] = useState(false);
   const multimediaFileInputRef = useRef<HTMLInputElement>(null);
 
@@ -831,24 +836,14 @@ export const InteractiveDataGrid: React.FC<InteractiveDataGridProps> = ({
 
   useEffect(() => {
     if (selectedDetailsRow) {
-      setEditMultimediaVersion(selectedDetailsRow.multimediaVersion || '');
-      setEditMultimediaPriceClient(selectedDetailsRow.multimediaPriceClient || '');
-      setEditMultimediaPriceBroker(selectedDetailsRow.multimediaPriceBroker || '');
-      setEditMultimediaImageUrl(selectedDetailsRow.multimediaImageUrl || '');
-      setEditMultimediaNotes(selectedDetailsRow.multimediaNotes || '');
+      const items = normalizeMultimediaItems(selectedDetailsRow);
+      setEditMultimediaItems(items);
       setMultimediaSavedToast(false);
     }
   }, [selectedDetailsRow]);
 
   const handleSaveMultimedia = (rowToUpdate: DocumentRow) => {
-    const updatedRow: DocumentRow = {
-      ...rowToUpdate,
-      multimediaVersion: editMultimediaVersion.trim(),
-      multimediaPriceClient: editMultimediaPriceClient.trim(),
-      multimediaPriceBroker: editMultimediaPriceBroker.trim(),
-      multimediaImageUrl: editMultimediaImageUrl.trim(),
-      multimediaNotes: editMultimediaNotes.trim(),
-    };
+    const updatedRow = syncMultimediaFields(rowToUpdate, editMultimediaItems);
 
     if (onUpdateRows) {
       const updatedRows = document.rows.map((r) => (r.id === rowToUpdate.id ? updatedRow : r));
@@ -861,18 +856,66 @@ export const InteractiveDataGrid: React.FC<InteractiveDataGridProps> = ({
     }, 3500);
   };
 
-  const handleMultimediaFileUpload = (file: File) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const dataUrl = reader.result as string;
-      setEditMultimediaImageUrl(dataUrl);
-    };
-    reader.readAsDataURL(file);
+  const handleAddMultimediaTab = () => {
+    const newItem = createNewMultimediaItem(editMultimediaItems);
+    const nextItems = [...editMultimediaItems, newItem];
+    setEditMultimediaItems(nextItems);
+    setDetailsModalTab(newItem.id);
   };
 
-  const handleOpenDetails = useCallback((row: DocumentRow, initialTab: 'lighting' | 'multimedia' = 'lighting') => {
+  const handleDeleteMultimediaTab = (idToDelete: string) => {
+    if (editMultimediaItems.length <= 1) return;
+    const nextItems = editMultimediaItems.filter((it) => it.id !== idToDelete);
+    setEditMultimediaItems(nextItems);
+    if (detailsModalTab === idToDelete) {
+      setDetailsModalTab(nextItems[0]?.id || 'lighting');
+    }
+    if (selectedDetailsRow && onUpdateRows) {
+      const updatedRow = syncMultimediaFields(selectedDetailsRow, nextItems);
+      setSelectedDetailsRow(updatedRow);
+      const updatedRows = document.rows.map((r) => (r.id === selectedDetailsRow.id ? updatedRow : r));
+      onUpdateRows(updatedRows);
+    }
+  };
+
+  const handleUpdateActiveMultimediaField = (
+    id: string,
+    field: keyof MultimediaItem,
+    value: string
+  ) => {
+    setEditMultimediaItems((prev) =>
+      prev.map((it) => (it.id === id ? { ...it, [field]: value } : it))
+    );
+  };
+
+  const handleMultimediaFileUpload = async (file: File, itemId: string) => {
+    try {
+      const uploadedUrl = await uploadImageToProgramFolder(file, {
+        rowId: selectedDetailsRow?.id,
+        brand: selectedDetailsRow?.brand,
+        model: selectedDetailsRow?.model,
+        suggestedFilename: `multimedia_${file.name}`,
+      });
+      handleUpdateActiveMultimediaField(itemId, 'imageUrl', uploadedUrl);
+    } catch {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const dataUrl = reader.result as string;
+        handleUpdateActiveMultimediaField(itemId, 'imageUrl', dataUrl);
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  const handleOpenDetails = useCallback((row: DocumentRow, initialTab: 'lighting' | 'multimedia' | string = 'lighting') => {
     setSelectedDetailsRow(row);
-    setDetailsModalTab(initialTab);
+    const items = normalizeMultimediaItems(row);
+    setEditMultimediaItems(items);
+    if (initialTab === 'multimedia') {
+      setDetailsModalTab(items[0]?.id || 'mm-1');
+    } else {
+      setDetailsModalTab(initialTab);
+    }
   }, []);
 
   const handleOpenImageModal = useCallback((row: DocumentRow) => {
@@ -932,18 +975,36 @@ export const InteractiveDataGrid: React.FC<InteractiveDataGridProps> = ({
     return Array.from(set).sort((a, b) => a.localeCompare(b, 'pl', { sensitivity: 'base', numeric: true }));
   }, [document, selectedBrand]);
 
-  // Lista roczników i przedziałów lat (Kolumna 5: Lata) - dopasowana do wybranej marki i modelu
+  const deferredSearchQuery = useDeferredValue(searchQuery);
+  const deferredBrandSearch = useDeferredValue(brandSearchInput);
+  const deferredModelSearch = useDeferredValue(modelSearchInput);
+
+  // Filtrowanie wierszy z zaawansowanym silnikiem wyszukiwania (tolerancja na spacje, myślniki, odmianę, roczniki, kody kompaktowe)
+  const { filteredRows, crossBrandCount } = useMemo(() => {
+    return filterCatalogRows(document.rows, {
+      searchQuery: deferredSearchQuery,
+      selectedBrand,
+      selectedModel,
+      selectedYear,
+      allBrands,
+    });
+  }, [document.rows, selectedBrand, selectedModel, selectedYear, deferredSearchQuery, allBrands]);
+
+  // Lista roczników i przedziałów lat (Kolumna 5: Lata) - dopasowana do wybranej marki, modelu oraz frazy wyszukiwania
   const availableYears = useMemo(() => {
     const rawRangesSet = new Set<string>();
     const singleYearsSet = new Set<number>();
 
-    document.rows.forEach((r) => {
+    // Gdy użytkownik wpisał frazę w wyszukiwarkę, uwzględniamy tylko pasujące pozycje
+    const targetPool = deferredSearchQuery.trim() ? filteredRows : document.rows;
+
+    targetPool.forEach((r) => {
       const b = (r.brand || '').trim().toLowerCase();
       const m = (r.model || '').trim().toLowerCase();
-      const matchBrand = selectedBrand === 'all' || b === selectedBrand.toLowerCase().trim();
+      const matchBrand = deferredSearchQuery.trim() || selectedBrand === 'all' || b === selectedBrand.toLowerCase().trim();
       const targetModel = selectedModel.toLowerCase().trim();
       const cleanTarget = targetModel.replace(/\([^)]+\)/g, '').trim();
-      const matchModel = selectedModel === 'all' || 
+      const matchModel = deferredSearchQuery.trim() || selectedModel === 'all' || 
         m === targetModel ||
         m.includes(targetModel) ||
         (cleanTarget.length >= 2 && m.includes(cleanTarget)) ||
@@ -974,66 +1035,10 @@ export const InteractiveDataGrid: React.FC<InteractiveDataGridProps> = ({
       singleYears: sortedSingleYears.map(String),
       totalCount: sortedRanges.length,
     };
-  }, [document, selectedBrand, selectedModel]);
-
-  const deferredSearchQuery = useDeferredValue(searchQuery);
-  const deferredBrandSearch = useDeferredValue(brandSearchInput);
-  const deferredModelSearch = useDeferredValue(modelSearchInput);
+  }, [document.rows, filteredRows, selectedBrand, selectedModel, deferredSearchQuery]);
 
   const [currentPage, setCurrentPage] = useState<number>(1);
   const [pageSize, setPageSize] = useState<number | 'all'>(50);
-
-  // Filtrowanie wierszy: Marka (Kol. 2), Model (Kol. 3), Rocznik (Kol. 5) oraz fraza
-  const filteredRows = useMemo(() => {
-    const q = deferredSearchQuery.toLowerCase().trim();
-    const brandTarget = selectedBrand !== 'all' ? selectedBrand.toLowerCase().trim() : '';
-    const modelTarget = selectedModel !== 'all' ? selectedModel.toLowerCase().trim() : '';
-    const cleanModelTarget = modelTarget ? modelTarget.replace(/\([^)]+\)/g, '').trim() : '';
-
-    return document.rows.filter((row) => {
-      // 1. Marka (Kolumna 2)
-      if (brandTarget) {
-        const brandVal = (row.brand || '').toLowerCase().trim();
-        if (brandVal !== brandTarget) {
-          return false;
-        }
-      }
-
-      // 2. Model (Kolumna 3)
-      if (modelTarget) {
-        const modelVal = (row.model || '').toLowerCase().trim();
-        const matchExact = modelVal === modelTarget;
-        const matchIncluded = modelVal.includes(modelTarget) || (cleanModelTarget.length >= 2 && modelVal.includes(cleanModelTarget));
-        const targetIncluded = modelTarget.includes(modelVal);
-        if (!matchExact && !matchIncluded && !targetIncluded) {
-          return false;
-        }
-      }
-
-      // 3. Rocznik (Kolumna 5: Lata)
-      if (selectedYear !== 'all' && !matchesYearFilter(row.years, selectedYear)) {
-        return false;
-      }
-
-      // 4. Szukaj frazy (inteligentne dopasowanie wielosłowowe)
-      if (q) {
-        const tokens = q.split(/\s+/).filter(Boolean);
-        const searchableText = `${row.lp || ''} ${row.brand || ''} ${row.model || ''} ${row.factoryCode || ''} ${row.years || ''} ${row.staticSignal || ''} ${row.dynamicSignal || ''} ${row.installation || ''} ${row.coding || ''} ${row.customNotes || ''}`.toLowerCase();
-        
-        const allTokensMatch = tokens.every((token) => {
-          if (searchableText.includes(token)) return true;
-          if (/^\d{4}$/.test(token)) {
-            return matchesYearFilter(row.years, token);
-          }
-          return false;
-        });
-
-        if (!allTokensMatch) return false;
-      }
-
-      return true;
-    });
-  }, [document, selectedBrand, selectedModel, selectedYear, deferredSearchQuery]);
 
   // Uporządkowana baza danych z wielopoziomowym sortowaniem
   const sortedRows = useMemo(() => {
@@ -1152,9 +1157,18 @@ export const InteractiveDataGrid: React.FC<InteractiveDataGridProps> = ({
     }
   };
 
-  const handleSaveCustomUrl = () => {
+  const handleSaveCustomUrl = async () => {
     if (activeImageModal && onUpdateRowImage && customImageUrlInput.trim()) {
-      const trimmedUrl = customImageUrlInput.trim();
+      let trimmedUrl = customImageUrlInput.trim();
+      if (trimmedUrl.startsWith('data:image/')) {
+        try {
+          trimmedUrl = await uploadImageToProgramFolder(trimmedUrl, {
+            rowId: activeImageModal.row.id,
+            brand: activeImageModal.row.brand,
+            model: activeImageModal.row.model,
+          });
+        } catch {}
+      }
       onUpdateRowImage(activeImageModal.row.id, trimmedUrl);
       if (selectedDetailsRow && selectedDetailsRow.id === activeImageModal.row.id) {
         setSelectedDetailsRow({
@@ -1172,9 +1186,18 @@ export const InteractiveDataGrid: React.FC<InteractiveDataGridProps> = ({
   const [lightingUrlInput, setLightingUrlInput] = useState('');
   const [lightingSavedToast, setLightingSavedToast] = useState(false);
 
-  const handleSaveLightingUrlForDetails = (row: DocumentRow) => {
+  const handleSaveLightingUrlForDetails = async (row: DocumentRow) => {
     if (!lightingUrlInput.trim() || !onUpdateRowImage) return;
-    const trimmed = lightingUrlInput.trim();
+    let trimmed = lightingUrlInput.trim();
+    if (trimmed.startsWith('data:image/')) {
+      try {
+        trimmed = await uploadImageToProgramFolder(trimmed, {
+          rowId: row.id,
+          brand: row.brand,
+          model: row.model,
+        });
+      } catch {}
+    }
     onUpdateRowImage(row.id, trimmed);
     setSelectedDetailsRow({
       ...row,
@@ -1245,8 +1268,10 @@ export const InteractiveDataGrid: React.FC<InteractiveDataGridProps> = ({
 
   const handleExecuteSearch = () => {
     setHasSearched(true);
+
+    // 1. Jeśli wybrano konkretny rocznik, znajdź pasujący wiersz i otwórz szczegóły
     if (selectedYear !== 'all') {
-      const matched = document.rows.find((row) => {
+      const matched = sortedRows.find((row) => {
         const matchBrand =
           selectedBrand === 'all' ||
           (row.brand || '').toLowerCase().trim() === selectedBrand.toLowerCase().trim();
@@ -1254,13 +1279,36 @@ export const InteractiveDataGrid: React.FC<InteractiveDataGridProps> = ({
           selectedModel === 'all' ||
           (row.model || '').toLowerCase().trim() === selectedModel.toLowerCase().trim();
         return matchBrand && matchModel && matchesYearFilter(row.years, selectedYear);
-      });
+      }) || sortedRows[0];
       if (matched) {
         setSelectedDetailsRow(matched);
         return;
       }
     }
 
+    // 2. Jeśli dokładnie 1 wiersz pasuje do kryteriów - natychmiast otwórz szczegóły i zsynchronizuj selektory
+    if (sortedRows.length === 1) {
+      const singleRow = sortedRows[0];
+      if (singleRow.brand) setSelectedBrand(singleRow.brand);
+      if (singleRow.model) setSelectedModel(singleRow.model);
+      if (singleRow.years) setSelectedYear(singleRow.years);
+      setSelectedDetailsRow(singleRow);
+      return;
+    }
+
+    // 3. Jeśli wiele wierszy pasuje do jednej marki / modelu, zsynchronizuj selektory
+    if (sortedRows.length > 1) {
+      const uniqueBrands = Array.from(new Set(sortedRows.map((r) => r.brand).filter(Boolean)));
+      if (uniqueBrands.length === 1 && selectedBrand === 'all') {
+        setSelectedBrand(uniqueBrands[0]);
+      }
+      const uniqueModels = Array.from(new Set(sortedRows.map((r) => r.model).filter(Boolean)));
+      if (uniqueModels.length === 1 && selectedModel === 'all') {
+        setSelectedModel(uniqueModels[0]);
+      }
+    }
+
+    // 4. Jeśli wybrano model, ale brak rocznika
     if (selectedModel !== 'all' && selectedYear === 'all') {
       if (availableYears.ranges.length === 1 && availableYears.singleYears.length === 0) {
         const onlyYear = availableYears.ranges[0];
@@ -1270,14 +1318,6 @@ export const InteractiveDataGrid: React.FC<InteractiveDataGridProps> = ({
       // Jeśli model posiada kilka roczników, otwórz listę wyboru rocznika
       setOpenDropdown('year');
       return;
-    }
-
-    if (sortedRows.length === 1) {
-      const singleRow = sortedRows[0];
-      if (singleRow.years) {
-        setSelectedYear(singleRow.years);
-      }
-      setSelectedDetailsRow(singleRow);
     }
   };
 
@@ -1723,29 +1763,44 @@ export const InteractiveDataGrid: React.FC<InteractiveDataGridProps> = ({
                 </button>
               )}
             </label>
-            <div className="relative">
-              <input
-                type="text"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    e.preventDefault();
-                    handleExecuteSearch();
-                  }
-                }}
-                placeholder="Wpisz np. G20, Mustang, LED..."
-                className="w-full bg-slate-800/90 border border-slate-700/80 rounded-xl pl-3.5 pr-8 py-2.5 text-sm text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-amber-400 transition-all"
-              />
-              {searchQuery && (
-                <button
-                  type="button"
-                  onClick={() => setSearchQuery('')}
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white cursor-pointer p-1"
-                >
-                  <X className="w-3.5 h-3.5" />
-                </button>
-              )}
+            <div className="flex items-center gap-1.5">
+              <div className="relative flex-1">
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      handleExecuteSearch();
+                    }
+                  }}
+                  placeholder="Wpisz np. G20, Mustang, F150..."
+                  className="w-full bg-slate-800/90 border border-slate-700/80 rounded-xl pl-3.5 pr-8 py-2.5 text-sm text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-amber-400 transition-all"
+                />
+                {searchQuery && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSearchQuery('');
+                      setHasSearched(false);
+                    }}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white cursor-pointer p-1"
+                    title="Wyczyść frazę"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={handleExecuteSearch}
+                className="px-3.5 py-2.5 bg-amber-400 hover:bg-amber-300 text-slate-950 font-bold rounded-xl text-xs sm:text-sm transition-all flex items-center gap-1.5 cursor-pointer shadow-md shrink-0 active:scale-95"
+                title="Wyszukaj pozycję"
+              >
+                <Search className="w-4 h-4" />
+                <span className="hidden sm:inline">Szukaj</span>
+              </button>
             </div>
           </div>
         </div>
@@ -1920,19 +1975,36 @@ export const InteractiveDataGrid: React.FC<InteractiveDataGridProps> = ({
 
       {/* Main Content Area */}
       {readOnly ? (
-        /* W widokach Klienta i Hurtu - baza i proponowane kafelki są całkowicie schowane.
-           Szczegóły pojawiają się w dedykowanym oknie dialogowym po wyborze / kliknięciu Wyszukaj */
-        hasSearched && sortedRows.length === 0 ? (
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-10 text-center flex flex-col items-center justify-center shadow-xl">
+        /* W widokach Klienta i Hurtu - baza i proponowane kafelki są schowane w stanie początkowym.
+           Po wyszukaniu lub wyborze pojawiają się dopasowane pozycje oraz dedykowane okno dialogowe ze szczegółami */
+        (hasSearched || searchQuery.trim() !== '') && sortedRows.length === 0 ? (
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-8 sm:p-10 text-center flex flex-col items-center justify-center shadow-xl max-w-xl mx-auto w-full">
             <div className="w-14 h-14 rounded-2xl bg-slate-800 border border-slate-700 text-slate-400 flex items-center justify-center mb-3">
               <Search className="w-7 h-7" />
             </div>
             <h3 className="text-base font-bold text-white mb-1">
               Nie znaleziono pojazdu
             </h3>
-            <p className="text-slate-400 text-xs mb-4 max-w-md">
-              Nie znaleziono pozycji spełniających podane kryteria. Sprawdź pisownię lub wybierz inną markę/model z list rozwijanych powyżej.
+            <p className="text-slate-400 text-xs mb-4 max-w-md leading-relaxed">
+              Nie znaleziono pozycji spełniających podane kryteria dla frazy &ldquo;{searchQuery}&rdquo;. Sprawdź pisownię lub skorzystaj z list rozwijanych powyżej.
             </p>
+
+            {crossBrandCount > 0 && selectedBrand !== 'all' && (
+              <div className="mb-4 p-3 bg-amber-400/10 border border-amber-400/30 rounded-xl text-amber-300 text-xs flex items-center justify-between gap-2 text-left w-full">
+                <span>Znaleziono {crossBrandCount} {crossBrandCount === 1 ? 'pozycję' : 'pozycji'} w innej marce.</span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedBrand('all');
+                    setSelectedModel('all');
+                  }}
+                  className="font-bold underline hover:text-white cursor-pointer shrink-0 ml-1"
+                >
+                  Pokaż wszystkie marki
+                </button>
+              </div>
+            )}
+
             <button
               type="button"
               onClick={handleResetFilters}
@@ -1942,9 +2014,9 @@ export const InteractiveDataGrid: React.FC<InteractiveDataGridProps> = ({
             </button>
           </div>
         ) : selectedModel !== 'all' || selectedBrand !== 'all' || searchQuery.trim() !== '' ? (
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-8 sm:p-10 text-center flex flex-col items-center justify-center shadow-xl space-y-4">
-            <div className="w-16 h-16 rounded-2xl bg-amber-400/10 border border-amber-400/25 text-amber-400 flex items-center justify-center shadow-inner">
-              <Car className="w-8 h-8" />
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 sm:p-8 text-center flex flex-col items-center justify-center shadow-xl space-y-4 max-w-2xl mx-auto w-full">
+            <div className="w-14 h-14 rounded-2xl bg-amber-400/10 border border-amber-400/25 text-amber-400 flex items-center justify-center shadow-inner">
+              <Car className="w-7 h-7" />
             </div>
             <div className="max-w-md">
               <span className="text-[11px] font-extrabold uppercase tracking-wider text-amber-400 bg-amber-400/10 border border-amber-400/30 px-2.5 py-1 rounded-md">
@@ -1961,12 +2033,74 @@ export const InteractiveDataGrid: React.FC<InteractiveDataGridProps> = ({
               </h3>
               <p className="text-slate-400 text-xs sm:text-sm mt-1.5 leading-relaxed">
                 {selectedModel !== 'all' && selectedYear === 'all'
-                  ? 'Wybierz rocznik pojazdu z listy powyżej, aby otworzyć okienko z dedykowaną wyceną.'
+                  ? 'Wybierz rocznik z listy powyżej lub kliknij pozycję poniżej, aby otworzyć wycenę.'
                   : sortedRows.length > 0
-                  ? `Dopasowano ${sortedRows.length} ${sortedRows.length === 1 ? 'pozycję' : 'pozycji'}. Wybierz rocznik z listy powyżej, aby otworzyć okno ze szczegółami.`
+                  ? `Dopasowano ${sortedRows.length} ${sortedRows.length === 1 ? 'pozycję' : 'pozycji'}. Kliknij, aby otworzyć szczegóły.`
                   : 'Wybierz markę, model i rocznik z listy powyżej.'}
               </p>
             </div>
+
+            {/* Lista dopasowanych pozycji do bezpośredniego otwarcia szczegółów */}
+            {sortedRows.length > 0 && (
+              <div className="w-full pt-4 border-t border-slate-800/80 space-y-2 text-left">
+                <div className="flex items-center justify-between text-xs text-slate-400 font-semibold px-1">
+                  <span>Dostępne wersje ({sortedRows.length}):</span>
+                  <span className="text-[11px] text-amber-400 font-normal">Kliknij, aby otworzyć wycenę</span>
+                </div>
+                <div className="flex flex-col gap-2 max-h-72 overflow-y-auto pr-1 scrollbar-thin scrollbar-thumb-slate-700">
+                  {sortedRows.slice(0, 25).map((row) => (
+                    <button
+                      key={row.id}
+                      type="button"
+                      onClick={() => {
+                        if (row.brand) setSelectedBrand(row.brand);
+                        if (row.model) setSelectedModel(row.model);
+                        if (row.years) setSelectedYear(row.years);
+                        setSelectedDetailsRow(row);
+                      }}
+                      className="w-full flex items-center justify-between p-3 rounded-xl bg-slate-950/70 hover:bg-slate-800/90 border border-slate-800 hover:border-amber-400/40 transition-all text-left cursor-pointer group"
+                    >
+                      <div className="flex items-center gap-3 min-w-0">
+                        {row.imageUrl ? (
+                          <img
+                            src={row.imageUrl}
+                            alt=""
+                            className="w-10 h-10 object-cover rounded-lg border border-slate-700/80 shrink-0"
+                          />
+                        ) : (
+                          <div className="w-10 h-10 rounded-lg bg-slate-800/80 border border-slate-700/80 flex items-center justify-center text-amber-400 shrink-0">
+                            <Car className="w-5 h-5" />
+                          </div>
+                        )}
+                        <div className="min-w-0">
+                          <div className="text-xs sm:text-sm font-bold text-white group-hover:text-amber-300 truncate">
+                            {row.brand} {row.model}
+                          </div>
+                          <div className="text-[11px] text-slate-400 flex items-center gap-2 mt-0.5">
+                            {row.factoryCode && row.factoryCode !== '-' && (
+                              <span className="text-slate-300 font-medium truncate max-w-[150px]">{row.factoryCode}</span>
+                            )}
+                            {row.years && row.years !== '-' && (
+                              <span className="text-amber-400 font-semibold bg-amber-400/10 px-1.5 py-0.5 rounded border border-amber-400/20">
+                                {row.years}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0 ml-2">
+                        {row.priceClientStatic && (
+                          <span className="text-xs font-bold text-emerald-400 hidden sm:inline">
+                            {row.priceClientStatic}
+                          </span>
+                        )}
+                        <ChevronRight className="w-4 h-4 text-slate-500 group-hover:text-amber-400 group-hover:translate-x-0.5 transition-transform" />
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         ) : (
           <div className="bg-slate-900 border border-slate-800 rounded-2xl p-8 sm:p-12 text-center flex flex-col items-center justify-center shadow-xl">
@@ -2496,12 +2630,12 @@ export const InteractiveDataGrid: React.FC<InteractiveDataGridProps> = ({
               </button>
             </div>
 
-            {/* Modal Tabs: Oświetlenie vs Multimedia */}
-            <div className="flex border-b border-slate-800 bg-slate-950/70 px-4 sm:px-6 pt-2.5 gap-2">
+            {/* Modal Tabs: Oświetlenie vs Dynamiczne Multimedia */}
+            <div className="flex items-center border-b border-slate-800 bg-slate-950/70 px-4 sm:px-6 pt-2.5 gap-2 overflow-x-auto no-scrollbar">
               <button
                 type="button"
                 onClick={() => setDetailsModalTab('lighting')}
-                className={`pb-3 px-4 text-xs sm:text-sm font-bold flex items-center gap-2 border-b-2 transition-all cursor-pointer ${
+                className={`pb-3 px-3.5 text-xs sm:text-sm font-bold flex items-center gap-2 border-b-2 transition-all cursor-pointer whitespace-nowrap shrink-0 ${
                   detailsModalTab === 'lighting'
                     ? 'border-amber-400 text-amber-300 bg-amber-400/10 rounded-t-lg'
                     : 'border-transparent text-slate-400 hover:text-slate-200 hover:bg-slate-900/50 rounded-t-lg'
@@ -2510,18 +2644,59 @@ export const InteractiveDataGrid: React.FC<InteractiveDataGridProps> = ({
                 <Lightbulb className={`w-4 h-4 ${detailsModalTab === 'lighting' ? 'text-amber-400' : 'text-slate-400'}`} />
                 <span>Oświetlenie</span>
               </button>
-              <button
-                type="button"
-                onClick={() => setDetailsModalTab('multimedia')}
-                className={`pb-3 px-4 text-xs sm:text-sm font-bold flex items-center gap-2 border-b-2 transition-all cursor-pointer ${
-                  detailsModalTab === 'multimedia'
-                    ? 'border-amber-400 text-amber-300 bg-amber-400/10 rounded-t-lg'
-                    : 'border-transparent text-slate-400 hover:text-slate-200 hover:bg-slate-900/50 rounded-t-lg'
-                }`}
-              >
-                <Tv className={`w-4 h-4 ${detailsModalTab === 'multimedia' ? 'text-amber-400' : 'text-slate-400'}`} />
-                <span>Multimedia</span>
-              </button>
+
+              {/* Multimedia Tabs */}
+              {editMultimediaItems.map((item, idx) => {
+                const isTabActive = detailsModalTab === item.id || (detailsModalTab === 'multimedia' && idx === 0);
+                const displayTitle = item.title?.trim() || (editMultimediaItems.length > 1 ? `Multimedia ${idx + 1}` : 'Multimedia');
+
+                return (
+                  <div key={item.id} className="relative flex items-center group/tab shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => setDetailsModalTab(item.id)}
+                      className={`pb-3 pl-3 pr-2.5 text-xs sm:text-sm font-bold flex items-center gap-2 border-b-2 transition-all cursor-pointer whitespace-nowrap ${
+                        isTabActive
+                          ? 'border-amber-400 text-amber-300 bg-amber-400/10 rounded-t-lg'
+                          : 'border-transparent text-slate-400 hover:text-slate-200 hover:bg-slate-900/50 rounded-t-lg'
+                      }`}
+                    >
+                      <Tv className={`w-4 h-4 ${isTabActive ? 'text-amber-400' : 'text-slate-400'}`} />
+                      <span>{displayTitle}</span>
+                      {item.imageUrl && (
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" title="Zawiera zdjęcie" />
+                      )}
+                    </button>
+
+                    {!readOnly && editMultimediaItems.length > 1 && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDeleteMultimediaTab(item.id);
+                        }}
+                        className="text-slate-500 hover:text-red-400 p-1 -ml-1 mr-1 rounded hover:bg-red-500/10 transition-colors"
+                        title={`Usuń zakładkę ${displayTitle}`}
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+
+              {/* Add Multimedia Tab Button in Settings Mode */}
+              {!readOnly && (
+                <button
+                  type="button"
+                  onClick={handleAddMultimediaTab}
+                  className="pb-3 px-3 text-xs font-bold text-amber-400 hover:text-amber-300 hover:bg-amber-400/10 border-b-2 border-dashed border-amber-400/40 hover:border-amber-400 rounded-t-lg flex items-center gap-1.5 transition-all cursor-pointer shrink-0 whitespace-nowrap"
+                  title="Dodaj kolejną zakładkę multimediów dla tego pojazdu"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>+ Dodaj multimedia</span>
+                </button>
+              )}
             </div>
 
             {/* Modal Body */}
@@ -2732,200 +2907,270 @@ export const InteractiveDataGrid: React.FC<InteractiveDataGridProps> = ({
                 </>
               ) : !readOnly ? (
                 /* Editable Multimedia Form in Settings Mode */
-                <div className="space-y-4 py-1">
-                  <div className="flex items-center justify-between bg-amber-400/10 border border-amber-400/20 rounded-xl px-3.5 py-2.5">
-                    <div className="flex items-center gap-2 text-xs font-semibold text-amber-300">
-                      <Edit2 className="w-4 h-4 text-amber-400" />
-                      <span>Edycja modułu Multimedia dla tej pozycji</span>
-                    </div>
-                    <span className="text-[10px] bg-slate-900 text-slate-300 px-2 py-0.5 rounded font-mono border border-slate-800">
-                      Tryb konfiguracji
-                    </span>
-                  </div>
+                (() => {
+                  const activeMmItem =
+                    editMultimediaItems.find((it) => it.id === detailsModalTab) ||
+                    editMultimediaItems[0] || {
+                      id: 'mm-1',
+                      title: 'Multimedia 1',
+                      version: '',
+                      priceClient: '',
+                      priceBroker: '',
+                      imageUrl: '',
+                      notes: '',
+                    };
+                  const activeIndex = editMultimediaItems.findIndex((it) => it.id === activeMmItem.id);
 
-                  {/* Photo Section */}
-                  <div className="bg-slate-950/70 border border-slate-800 rounded-xl p-4 space-y-3">
-                    <div className="flex items-center justify-between">
-                      <label className="text-xs font-bold text-slate-300 flex items-center gap-1.5">
-                        <ImageIcon className="w-3.5 h-3.5 text-amber-400" />
-                        <span>Zdjęcie multimediów (ekran / stacja / moduł)</span>
-                      </label>
-                      {editMultimediaImageUrl && (
-                        <button
-                          type="button"
-                          onClick={() => setEditMultimediaImageUrl('')}
-                          className="text-[11px] text-red-400 hover:text-red-300 flex items-center gap-1 cursor-pointer"
-                        >
-                          <Trash2 className="w-3 h-3" />
-                          <span>Usuń zdjęcie</span>
-                        </button>
-                      )}
-                    </div>
+                  return (
+                    <div className="space-y-4 py-1">
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between bg-amber-400/10 border border-amber-400/20 rounded-xl px-3.5 py-2.5 gap-2">
+                        <div className="flex items-center gap-2 text-xs font-semibold text-amber-300">
+                          <Edit2 className="w-4 h-4 text-amber-400 shrink-0" />
+                          <span>
+                            Edycja: <strong className="text-white">{activeMmItem.title || `Multimedia ${activeIndex + 1}`}</strong>
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-[10px] bg-slate-900 text-slate-300 px-2 py-0.5 rounded font-mono border border-slate-800">
+                            Zakładka {activeIndex + 1} z {editMultimediaItems.length}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={handleAddMultimediaTab}
+                            className="text-[10px] bg-amber-400 hover:bg-amber-300 text-slate-950 font-bold px-2.5 py-1 rounded-md transition-all flex items-center gap-1 cursor-pointer"
+                            title="Dodaj kolejną zakładkę multimediów"
+                          >
+                            <Plus className="w-3 h-3" />
+                            <span>Dodaj kolejną</span>
+                          </button>
+                        </div>
+                      </div>
 
-                    <div className="flex flex-col sm:flex-row items-center gap-4">
-                      <div className="w-28 h-20 bg-slate-900 rounded-xl border border-slate-800 overflow-hidden flex-shrink-0 flex items-center justify-center p-1">
-                        {editMultimediaImageUrl ? (
-                          <DelayedHoverZoomImage
-                            src={editMultimediaImageUrl}
-                            alt="Multimedia preview"
-                            title={`${selectedDetailsRow.brand} ${selectedDetailsRow.model}`}
-                            subtitle={selectedDetailsRow.years}
-                            version={editMultimediaVersion}
-                            containerClassName="w-full h-full flex items-center justify-center"
-                            className="max-h-full max-w-full object-contain rounded"
+                      {/* Tab Name customization */}
+                      <div className="bg-slate-950/70 border border-slate-800 rounded-xl p-3 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                        <div className="flex-1 w-full">
+                          <label className="text-xs font-bold text-slate-300 flex items-center gap-1.5 mb-1.5">
+                            <Layers className="w-3.5 h-3.5 text-amber-400" />
+                            <span>Nazwa zakładki (wyświetlana w pasku zakładek):</span>
+                          </label>
+                          <input
+                            type="text"
+                            value={activeMmItem.title || ''}
+                            onChange={(e) => handleUpdateActiveMultimediaField(activeMmItem.id, 'title', e.target.value)}
+                            placeholder={`np. Multimedia ${activeIndex + 1} lub CarPlay / MIB 3 / Ekran 12.3"`}
+                            className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs text-amber-300 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-amber-400 font-bold"
                           />
-                        ) : (
-                          <div className="text-center text-slate-600 flex flex-col items-center">
-                            <Tv className="w-6 h-6 mb-1" />
-                            <span className="text-[9px]">Brak zdjęcia</span>
-                          </div>
+                        </div>
+                        {editMultimediaItems.length > 1 && (
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteMultimediaTab(activeMmItem.id)}
+                            className="text-xs text-red-400 hover:text-red-300 bg-red-500/10 hover:bg-red-500/20 px-3 py-2 rounded-xl border border-red-500/20 flex items-center gap-1.5 transition-colors cursor-pointer shrink-0 mt-1 sm:mt-5"
+                            title="Usuń tę zakładkę multimediów"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                            <span>Usuń tę zakładkę</span>
+                          </button>
                         )}
                       </div>
 
-                      <div className="flex-1 w-full space-y-2">
-                        <div className="flex items-center gap-2">
-                          <input
-                            type="file"
-                            ref={multimediaFileInputRef}
-                            accept="image/*"
-                            className="hidden"
-                            onChange={(e) => {
-                              if (e.target.files && e.target.files[0]) {
-                                handleMultimediaFileUpload(e.target.files[0]);
-                              }
-                            }}
-                          />
-                          <button
-                            type="button"
-                            onClick={() => multimediaFileInputRef.current?.click()}
-                            className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-white font-semibold rounded-lg text-xs transition-all flex items-center gap-1.5 cursor-pointer border border-slate-700"
-                          >
-                            <Upload className="w-3.5 h-3.5 text-amber-400" />
-                            <span>Wybierz plik z dysku</span>
-                          </button>
+                      {/* Photo Section */}
+                      <div className="bg-slate-950/70 border border-slate-800 rounded-xl p-4 space-y-3">
+                        <div className="flex items-center justify-between">
+                          <label className="text-xs font-bold text-slate-300 flex items-center gap-1.5">
+                            <ImageIcon className="w-3.5 h-3.5 text-amber-400" />
+                            <span>Zdjęcie zestawu dla zakładki: <strong className="text-amber-300">{activeMmItem.title || `Multimedia ${activeIndex + 1}`}</strong></span>
+                          </label>
+                          {activeMmItem.imageUrl && (
+                            <button
+                              type="button"
+                              onClick={() => handleUpdateActiveMultimediaField(activeMmItem.id, 'imageUrl', '')}
+                              className="text-[11px] text-red-400 hover:text-red-300 flex items-center gap-1 cursor-pointer bg-red-500/10 px-2 py-1 rounded-md border border-red-500/20 transition-colors"
+                            >
+                              <Trash2 className="w-3 h-3" />
+                              <span>Usuń zdjęcie</span>
+                            </button>
+                          )}
                         </div>
 
-                        <div>
-                          <span className="text-[10px] text-slate-500 block mb-0.5">Lub wklej bezpośredni adres URL zdjęcia:</span>
+                        <div className="flex flex-col sm:flex-row items-center gap-4">
+                          <div className="w-28 h-20 bg-slate-900 rounded-xl border border-slate-800 overflow-hidden flex-shrink-0 flex items-center justify-center p-1">
+                            {activeMmItem.imageUrl ? (
+                              <DelayedHoverZoomImage
+                                src={activeMmItem.imageUrl}
+                                alt="Multimedia preview"
+                                title={`${selectedDetailsRow.brand} ${selectedDetailsRow.model}`}
+                                subtitle={selectedDetailsRow.years}
+                                version={activeMmItem.version || activeMmItem.title}
+                                containerClassName="w-full h-full flex items-center justify-center"
+                                className="max-h-full max-w-full object-contain rounded"
+                              />
+                            ) : (
+                              <div className="text-center text-slate-600 flex flex-col items-center">
+                                <Tv className="w-6 h-6 mb-1" />
+                                <span className="text-[9px]">Brak zdjęcia</span>
+                              </div>
+                            )}
+                          </div>
+
+                          <div className="flex-1 w-full space-y-2">
+                            <div className="flex items-center gap-2">
+                              <input
+                                type="file"
+                                ref={multimediaFileInputRef}
+                                accept="image/*"
+                                className="hidden"
+                                onChange={(e) => {
+                                  if (e.target.files && e.target.files[0]) {
+                                    handleMultimediaFileUpload(e.target.files[0], activeMmItem.id);
+                                  }
+                                }}
+                              />
+                              <button
+                                type="button"
+                                onClick={() => multimediaFileInputRef.current?.click()}
+                                className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-white font-semibold rounded-lg text-xs transition-all flex items-center gap-1.5 cursor-pointer border border-slate-700"
+                              >
+                                <Upload className="w-3.5 h-3.5 text-amber-400" />
+                                <span>Wybierz plik z dysku</span>
+                              </button>
+                            </div>
+
+                            <div>
+                              <span className="text-[10px] text-slate-500 block mb-0.5">Lub wklej bezpośredni adres URL zdjęcia:</span>
+                              <input
+                                type="text"
+                                value={activeMmItem.imageUrl || ''}
+                                onChange={(e) => handleUpdateActiveMultimediaField(activeMmItem.id, 'imageUrl', e.target.value)}
+                                placeholder="https://domena.pl/zdjecie-multimediow.jpg"
+                                className="w-full bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-white placeholder-slate-600 focus:outline-none focus:ring-1 focus:ring-amber-400 font-mono"
+                              />
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Version and Prices Input Fields */}
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        {/* Wersja */}
+                        <div className="bg-slate-950/70 border border-slate-800 rounded-xl p-3 sm:col-span-2">
+                          <label className="text-xs font-bold text-slate-300 block mb-1.5 flex items-center gap-1.5">
+                            <Info className="w-3.5 h-3.5 text-amber-400" />
+                            <span>Wersja / Typ urządzenia / Nawigacja</span>
+                          </label>
                           <input
                             type="text"
-                            value={editMultimediaImageUrl}
-                            onChange={(e) => setEditMultimediaImageUrl(e.target.value)}
-                            placeholder="https://domena.pl/zdjecie-multimediow.jpg"
-                            className="w-full bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-white placeholder-slate-600 focus:outline-none focus:ring-1 focus:ring-amber-400"
+                            value={activeMmItem.version || ''}
+                            onChange={(e) => handleUpdateActiveMultimediaField(activeMmItem.id, 'version', e.target.value)}
+                            placeholder="np. MIB 3 / Apple CarPlay & Android Auto / Ekran 10.25 cala"
+                            className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs text-white placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-amber-400 font-medium"
+                          />
+                          <span className="text-[10px] text-slate-500 mt-1 block">
+                            Pozostawienie pustego pola wyświetli &quot;Brak informacji&quot; w widokach Klienta i Brokera.
+                          </span>
+                        </div>
+
+                        {/* Cena Klient */}
+                        <div className="bg-slate-950/70 border border-slate-800 rounded-xl p-3">
+                          <label className="text-xs font-bold text-amber-400 block mb-1.5">
+                            Cena dla Klienta
+                          </label>
+                          <input
+                            type="text"
+                            value={activeMmItem.priceClient || ''}
+                            onChange={(e) => handleUpdateActiveMultimediaField(activeMmItem.id, 'priceClient', e.target.value)}
+                            placeholder="np. 1500 PLN lub 1500 zł"
+                            className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs text-white placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-amber-400 font-mono font-bold"
+                          />
+                        </div>
+
+                        {/* Cena Broker */}
+                        <div className="bg-slate-950/70 border border-slate-800 rounded-xl p-3">
+                          <label className="text-xs font-bold text-blue-400 block mb-1.5">
+                            Cena dla Brokera / Hurtowa
+                          </label>
+                          <input
+                            type="text"
+                            value={activeMmItem.priceBroker || ''}
+                            onChange={(e) => handleUpdateActiveMultimediaField(activeMmItem.id, 'priceBroker', e.target.value)}
+                            placeholder="np. 1100 PLN lub 1100 zł"
+                            className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs text-white placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-400 font-mono font-bold"
+                          />
+                        </div>
+
+                        {/* Dodatkowe uwagi / opis */}
+                        <div className="bg-slate-950/70 border border-slate-800 rounded-xl p-3 sm:col-span-2">
+                          <label className="text-xs font-bold text-slate-300 block mb-1.5">
+                            Uwagi / Zakres prac (opcjonalnie)
+                          </label>
+                          <textarea
+                            rows={2}
+                            value={activeMmItem.notes || ''}
+                            onChange={(e) => handleUpdateActiveMultimediaField(activeMmItem.id, 'notes', e.target.value)}
+                            placeholder="np. W cenie aktywacja modułu, profesjonalny montaż i kodowanie..."
+                            className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs text-white placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-amber-400 resize-none"
                           />
                         </div>
                       </div>
-                    </div>
-                  </div>
 
-                  {/* Version and Prices Input Fields */}
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    {/* Wersja */}
-                    <div className="bg-slate-950/70 border border-slate-800 rounded-xl p-3 sm:col-span-2">
-                      <label className="text-xs font-bold text-slate-300 block mb-1.5 flex items-center gap-1.5">
-                        <Info className="w-3.5 h-3.5 text-amber-400" />
-                        <span>Wersja / Typ urządzenia / Nawigacja</span>
-                      </label>
-                      <input
-                        type="text"
-                        value={editMultimediaVersion}
-                        onChange={(e) => setEditMultimediaVersion(e.target.value)}
-                        placeholder="np. MIB 3 / Apple CarPlay & Android Auto / Ekran 10.25 cala"
-                        className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs text-white placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-amber-400 font-medium"
-                      />
-                      <span className="text-[10px] text-slate-500 mt-1 block">
-                        Pozostawienie pustego pola wyświetli &quot;Brak informacji&quot; w widokach Klienta i Brokera.
-                      </span>
-                    </div>
+                      {/* Save button & feedback */}
+                      <div className="flex items-center justify-between pt-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            handleUpdateActiveMultimediaField(activeMmItem.id, 'version', '');
+                            handleUpdateActiveMultimediaField(activeMmItem.id, 'priceClient', '');
+                            handleUpdateActiveMultimediaField(activeMmItem.id, 'priceBroker', '');
+                            handleUpdateActiveMultimediaField(activeMmItem.id, 'imageUrl', '');
+                            handleUpdateActiveMultimediaField(activeMmItem.id, 'notes', '');
+                          }}
+                          className="text-xs text-slate-500 hover:text-slate-300 flex items-center gap-1 cursor-pointer py-1.5 px-2.5 rounded-lg hover:bg-slate-800"
+                        >
+                          <RotateCcw className="w-3 h-3" />
+                          <span>Wyczyść tę zakładkę</span>
+                        </button>
 
-                    {/* Cena Klient */}
-                    <div className="bg-slate-950/70 border border-slate-800 rounded-xl p-3">
-                      <label className="text-xs font-bold text-amber-400 block mb-1.5">
-                        Cena dla Klienta
-                      </label>
-                      <input
-                        type="text"
-                        value={editMultimediaPriceClient}
-                        onChange={(e) => setEditMultimediaPriceClient(e.target.value)}
-                        placeholder="np. 1500 PLN lub 1500 zł"
-                        className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs text-white placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-amber-400 font-mono font-bold"
-                      />
+                        <div className="flex items-center gap-3">
+                          {multimediaSavedToast && (
+                            <span className="text-xs font-bold text-emerald-400 flex items-center gap-1 animate-pulse">
+                              <Check className="w-4 h-4" />
+                              <span>Zapisano pomyślnie wszystkie zakładki!</span>
+                            </span>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => handleSaveMultimedia(selectedDetailsRow)}
+                            className="px-5 py-2.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold rounded-xl text-xs transition-all flex items-center gap-1.5 cursor-pointer shadow-lg shadow-amber-500/20"
+                          >
+                            <Check className="w-4 h-4" />
+                            <span>Zapisz dane multimediów</span>
+                          </button>
+                        </div>
+                      </div>
                     </div>
-
-                    {/* Cena Broker */}
-                    <div className="bg-slate-950/70 border border-slate-800 rounded-xl p-3">
-                      <label className="text-xs font-bold text-blue-400 block mb-1.5">
-                        Cena dla Brokera / Hurtowa
-                      </label>
-                      <input
-                        type="text"
-                        value={editMultimediaPriceBroker}
-                        onChange={(e) => setEditMultimediaPriceBroker(e.target.value)}
-                        placeholder="np. 1100 PLN lub 1100 zł"
-                        className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs text-white placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-400 font-mono font-bold"
-                      />
-                    </div>
-
-                    {/* Dodatkowe uwagi / opis */}
-                    <div className="bg-slate-950/70 border border-slate-800 rounded-xl p-3 sm:col-span-2">
-                      <label className="text-xs font-bold text-slate-300 block mb-1.5">
-                        Uwagi / Zakres prac (opcjonalnie)
-                      </label>
-                      <textarea
-                        rows={2}
-                        value={editMultimediaNotes}
-                        onChange={(e) => setEditMultimediaNotes(e.target.value)}
-                        placeholder="np. W cenie aktywacja modułu, profesjonalny montaż i kodowanie..."
-                        className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs text-white placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-amber-400 resize-none"
-                      />
-                    </div>
-                  </div>
-
-                  {/* Save button & feedback */}
-                  <div className="flex items-center justify-between pt-2">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setEditMultimediaVersion('');
-                        setEditMultimediaPriceClient('');
-                        setEditMultimediaPriceBroker('');
-                        setEditMultimediaImageUrl('');
-                        setEditMultimediaNotes('');
-                      }}
-                      className="text-xs text-slate-500 hover:text-slate-300 flex items-center gap-1 cursor-pointer py-1.5 px-2.5 rounded-lg hover:bg-slate-800"
-                    >
-                      <RotateCcw className="w-3 h-3" />
-                      <span>Wyczyść formularz</span>
-                    </button>
-
-                    <div className="flex items-center gap-3">
-                      {multimediaSavedToast && (
-                        <span className="text-xs font-bold text-emerald-400 flex items-center gap-1 animate-pulse">
-                          <Check className="w-4 h-4" />
-                          <span>Zapisano pomyślnie!</span>
-                        </span>
-                      )}
-                      <button
-                        type="button"
-                        onClick={() => handleSaveMultimedia(selectedDetailsRow)}
-                        className="px-5 py-2.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold rounded-xl text-xs transition-all flex items-center gap-1.5 cursor-pointer shadow-lg shadow-amber-500/20"
-                      >
-                        <Check className="w-4 h-4" />
-                        <span>Zapisz dane multimediów</span>
-                      </button>
-                    </div>
-                  </div>
-                </div>
+                  );
+                })()
               ) : (
                 /* Read-Only Multimedia Tab Content in Client/Broker Mode */
                 (() => {
+                  const activeMmItem =
+                    editMultimediaItems.find((it) => it.id === detailsModalTab) ||
+                    editMultimediaItems[0] || {
+                      id: 'mm-1',
+                      title: 'Multimedia 1',
+                      version: '',
+                      priceClient: '',
+                      priceBroker: '',
+                      imageUrl: '',
+                      notes: '',
+                    };
+
                   const hasAnyMultimedia = Boolean(
-                    selectedDetailsRow.multimediaVersion ||
-                    selectedDetailsRow.multimediaPriceClient ||
-                    selectedDetailsRow.multimediaPriceBroker ||
-                    selectedDetailsRow.multimediaImageUrl ||
-                    selectedDetailsRow.multimediaNotes
+                    activeMmItem.version ||
+                    activeMmItem.priceClient ||
+                    activeMmItem.priceBroker ||
+                    activeMmItem.imageUrl ||
+                    activeMmItem.notes
                   );
 
                   if (!hasAnyMultimedia) {
@@ -2938,7 +3183,7 @@ export const InteractiveDataGrid: React.FC<InteractiveDataGridProps> = ({
                           Brak informacji
                         </h4>
                         <p className="text-slate-400 text-xs sm:text-sm max-w-md mb-6 leading-relaxed">
-                          Dla wybranego modelu <strong className="text-white">{selectedDetailsRow.brand} {selectedDetailsRow.model} ({selectedDetailsRow.years})</strong> nie wprowadzono jeszcze szczegółowych danych w kategorii Multimedia.
+                          Dla wybranego modelu <strong className="text-white">{selectedDetailsRow.brand} {selectedDetailsRow.model} ({selectedDetailsRow.years})</strong> w zakładce <strong className="text-amber-400">{activeMmItem.title || 'Multimedia'}</strong> nie wprowadzono jeszcze szczegółowych danych.
                         </p>
                         <div className="inline-flex items-center gap-2 bg-slate-900 border border-slate-800 px-4 py-2 rounded-xl text-xs text-slate-300">
                           <Info className="w-4 h-4 text-amber-400 shrink-0" />
@@ -2952,14 +3197,14 @@ export const InteractiveDataGrid: React.FC<InteractiveDataGridProps> = ({
                     <div className="space-y-4 py-1">
                       {/* Photo Box */}
                       <div className="bg-slate-950/80 rounded-2xl p-4 border border-slate-800 flex items-center justify-center min-h-[180px]">
-                        {selectedDetailsRow.multimediaImageUrl ? (
+                        {activeMmItem.imageUrl ? (
                           <div className="relative flex flex-col items-center">
                             <DelayedHoverZoomImage
-                              src={selectedDetailsRow.multimediaImageUrl}
+                              src={activeMmItem.imageUrl}
                               alt={`Multimedia ${selectedDetailsRow.brand} ${selectedDetailsRow.model}`}
                               title={`${selectedDetailsRow.brand} ${selectedDetailsRow.model}`}
                               subtitle={selectedDetailsRow.years}
-                              version={selectedDetailsRow.multimediaVersion}
+                              version={activeMmItem.version || activeMmItem.title}
                               containerClassName="max-h-[220px] max-w-full flex items-center justify-center"
                               className="max-h-[220px] max-w-full object-contain rounded-xl shadow-lg"
                             />
@@ -2982,7 +3227,7 @@ export const InteractiveDataGrid: React.FC<InteractiveDataGridProps> = ({
                         <div className="bg-slate-950/70 border border-slate-800/80 rounded-xl p-3 sm:col-span-2">
                           <span className="text-[11px] text-slate-400 block mb-0.5">Wersja / Typ urządzenia</span>
                           <span className="text-sm font-bold text-amber-300">
-                            {selectedDetailsRow.multimediaVersion || 'Brak informacji'}
+                            {activeMmItem.version || activeMmItem.title || 'Brak informacji'}
                           </span>
                         </div>
 
@@ -2990,7 +3235,7 @@ export const InteractiveDataGrid: React.FC<InteractiveDataGridProps> = ({
                         <div className="bg-slate-950/70 border border-slate-800/80 rounded-xl p-3">
                           <span className="text-[11px] text-slate-400 block mb-0.5">Cena dla Klienta</span>
                           <span className="text-sm font-extrabold text-amber-300 font-mono">
-                            {selectedDetailsRow.multimediaPriceClient || 'Brak informacji'}
+                            {activeMmItem.priceClient || 'Brak informacji'}
                           </span>
                         </div>
 
@@ -2999,17 +3244,17 @@ export const InteractiveDataGrid: React.FC<InteractiveDataGridProps> = ({
                           <div className="bg-slate-950/70 border border-blue-500/30 rounded-xl p-3">
                             <span className="text-[11px] text-blue-300 block mb-0.5 font-medium">Cena dla Brokera</span>
                             <span className="text-sm font-extrabold text-blue-400 font-mono">
-                              {selectedDetailsRow.multimediaPriceBroker || 'Brak informacji'}
+                              {activeMmItem.priceBroker || 'Brak informacji'}
                             </span>
                           </div>
                         )}
 
                         {/* Uwagi */}
-                        {selectedDetailsRow.multimediaNotes && (
+                        {activeMmItem.notes && (
                           <div className="bg-slate-950/70 border border-slate-800/80 rounded-xl p-3 sm:col-span-2">
                             <span className="text-[11px] text-slate-400 block mb-0.5">Uwagi / Zakres prac</span>
                             <p className="text-xs text-slate-200 leading-relaxed">
-                              {selectedDetailsRow.multimediaNotes}
+                              {activeMmItem.notes}
                             </p>
                           </div>
                         )}
