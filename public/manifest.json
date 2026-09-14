@@ -1,24 +1,44 @@
 {
   "name": "Cennik konwersji lamp i multimediów",
-  "short_name": "Cennik konwersji",
-  "description": "Cennik konwersji lamp samochodowych oraz adaptacji multimediów USA / Europa",
-  "start_url": "./",
+  "short_name": "Cennik Lamp",
+  "description": "Cennik konwersji lamp samochodowych oraz adaptacji systemów multimedialnych USA / Europa",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
   "display": "standalone",
   "background_color": "#020617",
-  "theme_color": "#0f172a",
+  "theme_color": "#020617",
   "orientation": "any",
   "icons": [
     {
-      "src": "./icon-192.png",
+      "src": "/icon-192.png",
       "sizes": "192x192",
       "type": "image/png",
-      "purpose": "any maskable"
+      "purpose": "any"
     },
     {
-      "src": "./icon.png",
+      "src": "/icon-512.png",
       "sizes": "512x512",
       "type": "image/png",
-      "purpose": "any maskable"
+      "purpose": "any"
+    },
+    {
+      "src": "/icon.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-maskable-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
     }
   ]
 }

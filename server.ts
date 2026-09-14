@@ -184,31 +184,42 @@ async function startServer() {
   app.use('/uploads', express.static(UPLOADS_DIR, { maxAge: '30d' }));
   app.use('/uploads', express.static(PUBLIC_UPLOADS_DIR, { maxAge: '30d' }));
 
-  app.get('/favicon.ico', (req, res) => {
-    const candidates = [
-      path.join(process.cwd(), 'dist', 'favicon.ico'),
-      path.join(process.cwd(), 'public', 'favicon.ico'),
-      path.join(process.cwd(), 'dist', 'icon.png'),
-      path.join(process.cwd(), 'public', 'icon.png'),
-    ];
-    for (const p of candidates) {
-      if (fs.existsSync(p)) return res.sendFile(p);
-    }
-    res.status(204).end();
-  });
+  // Static serving for icons, favicons, manifest, and apple-touch-icon
+  const iconRoutes = [
+    '/apple-touch-icon.png',
+    '/apple-touch-icon-precomposed.png',
+    '/apple-touch-icon-180x180.png',
+    '/favicon.ico',
+    '/favicon-32x32.png',
+    '/favicon-16x16.png',
+    '/favicon.svg',
+    '/icon.svg',
+    '/icon.png',
+    '/icon-192.png',
+    '/icon-512.png',
+    '/icon-maskable-192.png',
+    '/icon-maskable-512.png',
+    '/manifest.json',
+  ];
 
-  app.get(['/apple-touch-icon.png', '/apple-touch-icon-precomposed.png'], (req, res) => {
-    const candidates = [
-      path.join(process.cwd(), 'dist', 'apple-touch-icon.png'),
-      path.join(process.cwd(), 'public', 'icon-192.png'),
-      path.join(process.cwd(), 'dist', 'icon-192.png'),
-      path.join(process.cwd(), 'public', 'icon.png'),
-      path.join(process.cwd(), 'dist', 'icon.png'),
-    ];
-    for (const p of candidates) {
-      if (fs.existsSync(p)) return res.sendFile(p);
-    }
-    res.status(204).end();
+  iconRoutes.forEach((route) => {
+    app.get(route, (req, res) => {
+      const filename = path.basename(route);
+      const candidates = [
+        path.join(process.cwd(), 'dist', filename),
+        path.join(process.cwd(), 'public', filename),
+      ];
+      for (const p of candidates) {
+        if (fs.existsSync(p)) {
+          if (filename.endsWith('.svg')) res.setHeader('Content-Type', 'image/svg+xml');
+          else if (filename.endsWith('.png')) res.setHeader('Content-Type', 'image/png');
+          else if (filename.endsWith('.ico')) res.setHeader('Content-Type', 'image/x-icon');
+          else if (filename.endsWith('.json')) res.setHeader('Content-Type', 'application/manifest+json');
+          return res.sendFile(p);
+        }
+      }
+      res.status(404).end();
+    });
   });
 
   // Health checks for Cloud Run, Kubernetes, and uptime monitoring

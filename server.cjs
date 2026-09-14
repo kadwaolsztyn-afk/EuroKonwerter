@@ -709,35 +709,6 @@ with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
     }
   });
   const GITHUB_CONFIG_FILE = import_path.default.join(process.cwd(), "github-sync-config.json");
-  const GITHUB_SECRET_TOKEN_FILE = import_path.default.join(process.cwd(), ".github-secret-token.json");
-  function getSavedGitHubSecretToken() {
-    try {
-      if (process.env.GITHUB_TOKEN && process.env.GITHUB_TOKEN.trim()) {
-        return process.env.GITHUB_TOKEN.trim();
-      }
-      if (import_fs.default.existsSync(GITHUB_SECRET_TOKEN_FILE)) {
-        const raw = import_fs.default.readFileSync(GITHUB_SECRET_TOKEN_FILE, "utf-8");
-        const parsed = JSON.parse(raw);
-        if (parsed && typeof parsed.token === "string" && parsed.token.trim()) {
-          return parsed.token.trim();
-        }
-      }
-    } catch (_) {
-    }
-    return "";
-  }
-  function saveGitHubSecretToken(token) {
-    try {
-      if (token && token.trim()) {
-        import_fs.default.writeFileSync(
-          GITHUB_SECRET_TOKEN_FILE,
-          JSON.stringify({ token: token.trim(), updatedAt: (/* @__PURE__ */ new Date()).toISOString() }, null, 2),
-          "utf-8"
-        );
-      }
-    } catch (_) {
-    }
-  }
   app.get("/api/catalog/download", (req, res) => {
     try {
       res.setHeader("Cache-Control", "no-cache");
@@ -765,14 +736,11 @@ with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
     targetAssetFileName: "data-catalog.json",
     lastChecked: null,
     lastSynced: null,
-    lastVersion: null,
-    githubToken: ""
+    lastVersion: null
   };
   app.get("/api/sync/github/config", (req, res) => {
     try {
       res.setHeader("Cache-Control", "no-cache");
-      const savedSecretToken = getSavedGitHubSecretToken();
-      let effectiveConfig = { ...defaultGitHubConfig };
       if (import_fs.default.existsSync(GITHUB_CONFIG_FILE)) {
         const raw = import_fs.default.readFileSync(GITHUB_CONFIG_FILE, "utf-8");
         try {
@@ -783,18 +751,12 @@ with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
           if (!cfg.releaseTag || cfg.releaseTag === "Konwerter" || cfg.releaseTag === "Backup" || cfg.releaseTag === "Baza") {
             cfg.releaseTag = "main";
           }
-          effectiveConfig = { ...defaultGitHubConfig, ...cfg };
-        } catch (_) {
+          return res.json({ success: true, config: { ...defaultGitHubConfig, ...cfg } });
+        } catch {
+          return res.json({ success: true, config: defaultGitHubConfig });
         }
       }
-      if (savedSecretToken) {
-        effectiveConfig.githubToken = savedSecretToken;
-      }
-      return res.json({
-        success: true,
-        config: effectiveConfig,
-        hasSavedToken: Boolean(savedSecretToken)
-      });
+      return res.json({ success: true, config: defaultGitHubConfig });
     } catch (err) {
       return res.status(500).json({ success: false, error: err.message });
     }
@@ -812,17 +774,9 @@ with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
         } catch {
         }
       }
-      if (config.githubToken && typeof config.githubToken === "string" && config.githubToken.trim()) {
-        saveGitHubSecretToken(config.githubToken.trim());
-      }
       const updated = { ...current, ...config, githubToken: "" };
       import_fs.default.writeFileSync(GITHUB_CONFIG_FILE, JSON.stringify(updated, null, 2), "utf-8");
-      const savedSecretToken = getSavedGitHubSecretToken();
-      return res.json({
-        success: true,
-        config: { ...updated, githubToken: savedSecretToken },
-        hasSavedToken: Boolean(savedSecretToken)
-      });
+      return res.json({ success: true, config: updated });
     } catch (err) {
       return res.status(500).json({ success: false, error: err.message });
     }
@@ -1288,186 +1242,10 @@ with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
       return res.status(500).json({ success: false, error: err.message });
     }
   });
-  async function pushViaGitHubRestApiOnServer(owner, repo, branch, token, commitMessage, pushFullCode = false) {
-    try {
-      const cleanToken = token.trim();
-      const headers = {
-        Accept: "application/vnd.github.v3+json",
-        Authorization: cleanToken.startsWith("Bearer ") || cleanToken.startsWith("token ") ? cleanToken : `Bearer ${cleanToken}`,
-        "Content-Type": "application/json",
-        "User-Agent": "EuroKonwerter-Sync"
-      };
-      const refRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/git/refs/heads/${branch}`, { headers });
-      if (!refRes.ok) {
-        const err = await refRes.json().catch(() => ({}));
-        return { success: false, error: `Nie mo\u017Cna pobra\u0107 ga\u0142\u0119zi ${branch}: ${err?.message || refRes.statusText}` };
-      }
-      const refData = await refRes.json();
-      const latestCommitSha = refData.object.sha;
-      const commitRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/git/commits/${latestCommitSha}`, { headers });
-      if (!commitRes.ok) {
-        const err = await commitRes.json().catch(() => ({}));
-        return { success: false, error: `Nie mo\u017Cna pobra\u0107 commita: ${err?.message || commitRes.statusText}` };
-      }
-      const commitData = await commitRes.json();
-      const baseTreeSha = commitData.tree.sha;
-      const filesToPush = [];
-      if (import_fs.default.existsSync(DATA_FILE)) {
-        filesToPush.push({
-          path: "data-catalog.json",
-          contentBase64: import_fs.default.readFileSync(DATA_FILE).toString("base64")
-        });
-      }
-      if (import_fs.default.existsSync(PUBLIC_DATA_FILE)) {
-        filesToPush.push({
-          path: "public/data-catalog.json",
-          contentBase64: import_fs.default.readFileSync(PUBLIC_DATA_FILE).toString("base64")
-        });
-      }
-      if (import_fs.default.existsSync(SOURCE_CATALOG_FILE)) {
-        filesToPush.push({
-          path: "src/data/initialCatalog.ts",
-          contentBase64: import_fs.default.readFileSync(SOURCE_CATALOG_FILE).toString("base64")
-        });
-      }
-      if (import_fs.default.existsSync(GITHUB_CONFIG_FILE)) {
-        filesToPush.push({
-          path: "github-sync-config.json",
-          contentBase64: import_fs.default.readFileSync(GITHUB_CONFIG_FILE).toString("base64")
-        });
-      }
-      if (pushFullCode) {
-        const rootFiles = [
-          "package.json",
-          "tsconfig.json",
-          "vite.config.ts",
-          "index.html",
-          "server.ts",
-          ".gitignore",
-          "vercel.json",
-          "src/main.tsx",
-          "src/App.tsx",
-          "src/types.ts",
-          "src/index.css"
-        ];
-        for (const cf of rootFiles) {
-          const fullP = import_path.default.join(process.cwd(), cf);
-          if (import_fs.default.existsSync(fullP)) {
-            filesToPush.push({
-              path: cf,
-              contentBase64: import_fs.default.readFileSync(fullP).toString("base64")
-            });
-          }
-        }
-        const includeDirs = ["src/components", "src/utils", "src/data"];
-        for (const dir of includeDirs) {
-          const fullDir = import_path.default.join(process.cwd(), dir);
-          if (import_fs.default.existsSync(fullDir)) {
-            const entries = import_fs.default.readdirSync(fullDir);
-            for (const entry of entries) {
-              const entryPath = import_path.default.join(fullDir, entry);
-              if (import_fs.default.statSync(entryPath).isFile() && !entry.startsWith(".")) {
-                filesToPush.push({
-                  path: `${dir}/${entry}`,
-                  contentBase64: import_fs.default.readFileSync(entryPath).toString("base64")
-                });
-              }
-            }
-          }
-        }
-      }
-      if (import_fs.default.existsSync(PUBLIC_UPLOADS_DIR)) {
-        const uploadFiles = import_fs.default.readdirSync(PUBLIC_UPLOADS_DIR).filter((f) => !f.startsWith(".")).slice(-120);
-        for (const uf of uploadFiles) {
-          try {
-            const filePath = import_path.default.join(PUBLIC_UPLOADS_DIR, uf);
-            filesToPush.push({
-              path: `public/uploads/${uf}`,
-              contentBase64: import_fs.default.readFileSync(filePath).toString("base64")
-            });
-          } catch (_) {
-          }
-        }
-      }
-      const treeItems = [];
-      for (const file of filesToPush) {
-        const blobRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/git/blobs`, {
-          method: "POST",
-          headers,
-          body: JSON.stringify({
-            content: file.contentBase64,
-            encoding: "base64"
-          })
-        });
-        if (!blobRes.ok) {
-          const err = await blobRes.json().catch(() => ({}));
-          return { success: false, error: `B\u0142\u0105d tworzenia blobu dla ${file.path}: ${err?.message || blobRes.statusText}` };
-        }
-        const blobData = await blobRes.json();
-        treeItems.push({
-          path: file.path,
-          mode: "100644",
-          type: "blob",
-          sha: blobData.sha
-        });
-      }
-      const newTreeRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/git/trees`, {
-        method: "POST",
-        headers,
-        body: JSON.stringify({
-          base_tree: baseTreeSha,
-          tree: treeItems
-        })
-      });
-      if (!newTreeRes.ok) {
-        const err = await newTreeRes.json().catch(() => ({}));
-        return { success: false, error: `B\u0142\u0105d tworzenia drzewa git: ${err?.message || newTreeRes.statusText}` };
-      }
-      const newTreeData = await newTreeRes.json();
-      const newCommitRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/git/commits`, {
-        method: "POST",
-        headers,
-        body: JSON.stringify({
-          message: commitMessage,
-          tree: newTreeData.sha,
-          parents: [latestCommitSha]
-        })
-      });
-      if (!newCommitRes.ok) {
-        const err = await newCommitRes.json().catch(() => ({}));
-        return { success: false, error: `B\u0142\u0105d tworzenia commita: ${err?.message || newCommitRes.statusText}` };
-      }
-      const newCommitData = await newCommitRes.json();
-      let updateRefRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/git/refs/heads/${branch}`, {
-        method: "PATCH",
-        headers,
-        body: JSON.stringify({
-          sha: newCommitData.sha,
-          force: false
-        })
-      });
-      if (!updateRefRes.ok) {
-        updateRefRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/git/refs/heads/${branch}`, {
-          method: "PATCH",
-          headers,
-          body: JSON.stringify({
-            sha: newCommitData.sha,
-            force: true
-          })
-        });
-      }
-      if (!updateRefRes.ok) {
-        const err = await updateRefRes.json().catch(() => ({}));
-        return { success: false, error: `B\u0142\u0105d aktualizacji ga\u0142\u0119zi ${branch}: ${err?.message || updateRefRes.statusText}` };
-      }
-      return { success: true, commitSha: newCommitData.sha };
-    } catch (err) {
-      return { success: false, error: err?.message || "B\u0142\u0105d po\u0142\u0105czenia z API GitHub" };
-    }
-  }
   app.post("/api/sync/github/push", async (req, res) => {
     try {
       const { document, token, repoUrl, commitMessage, branch = "main", pushFullCode = false } = req.body;
+      let authToken = token;
       let cfg = defaultGitHubConfig;
       if (import_fs.default.existsSync(GITHUB_CONFIG_FILE)) {
         try {
@@ -1475,7 +1253,9 @@ with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
         } catch {
         }
       }
-      let authToken = token || req.headers.authorization?.replace(/^Bearer\s+/i, "") || getSavedGitHubSecretToken() || process.env.GITHUB_TOKEN || cfg.githubToken;
+      if (!authToken) {
+        authToken = process.env.GITHUB_TOKEN || cfg.githubToken;
+      }
       if (!authToken || !authToken.trim()) {
         return res.status(400).json({
           success: false,
@@ -1483,7 +1263,6 @@ with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
         });
       }
       const cleanToken = authToken.trim();
-      saveGitHubSecretToken(cleanToken);
       const effectiveRepoUrl = repoUrl || cfg.repoUrl || "https://github.com/kadwaolsztyn-afk/EuroKonwerter";
       const { owner, repo } = parseRepo(effectiveRepoUrl);
       let docToPush = document;
@@ -1525,100 +1304,58 @@ with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
       const now = /* @__PURE__ */ new Date();
       const versionStr = `2026.03_ALL_v461_SYNC_${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}_${String(now.getHours()).padStart(2, "0")}${String(now.getMinutes()).padStart(2, "0")}`;
       const msg = commitMessage || (pushFullCode ? `Aktualizacja calego programu i bazy EuroKonwerter (${docToPush?.rows?.length || 461} pozycji, ${uploadsCount} zdj\u0119\u0107, wersja ${versionStr}) - Auto-deploy Vercel` : `Aktualizacja bazy (${docToPush?.rows?.length || 461} pozycji, ${uploadsCount} zdj\u0119\u0107, wersja ${versionStr})`);
-      const gitRemoteAuthUrl = `https://${encodeURIComponent(cleanToken)}@github.com/${owner}/${repo}.git`;
+      const gitRemoteAuthUrl = `https://x-access-token:${encodeURIComponent(cleanToken)}@github.com/${owner}/${repo}.git`;
       const execOpts = { cwd: process.cwd(), encoding: "utf-8", timeout: 12e4 };
       try {
         const isGit = import_fs.default.existsSync(import_path.default.join(process.cwd(), ".git"));
         if (!isGit) {
-          import_child_process.default.execSync(`git init -b ${branch}`, execOpts);
+          import_child_process.default.execSync("git init -b main", execOpts);
           import_child_process.default.execSync(`git config user.name "${owner}"`, execOpts);
           import_child_process.default.execSync('git config user.email "kadwaolsztyn@gmail.com"', execOpts);
           import_child_process.default.execSync(`git remote add origin "${gitRemoteAuthUrl}"`, execOpts);
         } else {
-          import_child_process.default.execSync(`git config user.name "${owner}"`, execOpts);
-          import_child_process.default.execSync('git config user.email "kadwaolsztyn@gmail.com"', execOpts);
           import_child_process.default.execSync(`git remote set-url origin "${gitRemoteAuthUrl}"`, execOpts);
         }
-        let remoteBranchExists = false;
+        let hasFetched = false;
         try {
-          const isShallow = import_fs.default.existsSync(import_path.default.join(process.cwd(), ".git", "shallow"));
-          if (isShallow) {
-            try {
-              import_child_process.default.execSync(`git fetch --unshallow origin ${branch}`, execOpts);
-            } catch (_) {
-              import_child_process.default.execSync(`git fetch origin ${branch}`, execOpts);
-            }
-          } else {
-            import_child_process.default.execSync(`git fetch origin ${branch}`, execOpts);
-          }
-          import_child_process.default.execSync(`git rev-parse --verify origin/${branch}`, execOpts);
-          remoteBranchExists = true;
+          import_child_process.default.execSync(`git fetch origin ${branch} --depth=1`, execOpts);
+          hasFetched = true;
         } catch (fErr) {
-          console.log("[Git Push] Fetch info (new repository or branch):", fErr.message);
+          console.warn("[Git Push] Fetch warning:", fErr.message);
         }
-        if (remoteBranchExists) {
+        if (hasFetched) {
           try {
-            import_child_process.default.execSync(`git checkout -B ${branch}`, execOpts);
-            import_child_process.default.execSync(`git reset --mixed origin/${branch}`, execOpts);
-          } catch (resetErr) {
-            console.log("[Git Push] Alignment notice:", resetErr.message);
+            import_child_process.default.execSync(`git reset origin/${branch}`, execOpts);
+          } catch (rErr) {
+            console.warn("[Git Push] Reset warning:", rErr.message);
           }
         }
         if (pushFullCode) {
           import_child_process.default.execSync("git add -A", execOpts);
         } else {
-          const filesToStage = [
-            "data-catalog.json",
-            "public/data-catalog.json",
-            "src/data/initialCatalog.ts",
-            "github-sync-config.json"
-          ];
+          const filesToStage = ["data-catalog.json", "public/data-catalog.json", "src/data/initialCatalog.ts"];
           if (import_fs.default.existsSync(import_path.default.join(process.cwd(), ".gitignore"))) filesToStage.push(".gitignore");
-          if (import_fs.default.existsSync(import_path.default.join(process.cwd(), "public", "uploads"))) filesToStage.push("public/uploads");
-          for (const f of filesToStage) {
-            if (import_fs.default.existsSync(import_path.default.join(process.cwd(), f))) {
-              import_child_process.default.execSync(`git add "${f}"`, execOpts);
-            }
-          }
+          if (import_fs.default.existsSync(import_path.default.join(process.cwd(), "public", "uploads"))) filesToStage.push("public/uploads/");
+          import_child_process.default.execSync(`git add ${filesToStage.join(" ")}`, execOpts);
         }
-        const stagedDiff = import_child_process.default.execSync("git diff --cached --name-only", execOpts).trim();
+        const statusOutput = import_child_process.default.execSync("git status --porcelain", execOpts).trim();
         let commitSha = "";
-        if (stagedDiff) {
-          import_child_process.default.execSync(`git commit -m "${msg.replace(/"/g, '\\"')}" --no-verify`, execOpts);
+        if (statusOutput) {
+          import_child_process.default.execSync(`git commit -m "${msg.replace(/"/g, '\\"')}"`, execOpts);
           commitSha = import_child_process.default.execSync("git rev-parse HEAD", execOpts).trim();
         } else {
+          import_child_process.default.execSync(`git commit --allow-empty -m "${msg.replace(/"/g, '\\"')}"`, execOpts);
           commitSha = import_child_process.default.execSync("git rev-parse HEAD", execOpts).trim();
         }
-        let pushSuccess = false;
         try {
-          import_child_process.default.execSync(`git push -u origin ${branch}`, execOpts);
-          pushSuccess = true;
+          import_child_process.default.execSync(`git push origin ${branch}`, execOpts);
         } catch (pushErr) {
-          console.log("[Git Push] First push attempt info:", pushErr.message);
-          try {
-            import_child_process.default.execSync(`git pull --rebase origin ${branch}`, execOpts);
-            import_child_process.default.execSync(`git push -u origin ${branch}`, execOpts);
-            pushSuccess = true;
-          } catch (rebaseErr) {
-            try {
-              import_child_process.default.execSync(`git push origin ${branch} --force`, execOpts);
-              pushSuccess = true;
-            } catch (fErr) {
-              console.log("[Git Push] Git CLI push fallback notice:", fErr.message);
-            }
-          }
-        }
-        if (!pushSuccess) {
-          console.log("[Git Push] Executing direct GitHub Git Data API fallback from server...");
-          const restResult = await pushViaGitHubRestApiOnServer(owner, repo, branch, cleanToken, msg, pushFullCode);
-          if (!restResult.success) {
-            throw new Error(restResult.error || "B\u0142\u0105d wysy\u0142ania przez Git CLI oraz GitHub API");
-          }
-          commitSha = restResult.commitSha || commitSha;
+          console.warn("[Git Push] Standard push warning, attempting with force push:", pushErr.message);
+          import_child_process.default.execSync(`git push origin ${branch} --force`, execOpts);
         }
         const updatedConfig = {
           ...cfg,
-          githubToken: "",
+          githubToken: cleanToken,
           repoUrl: effectiveRepoUrl,
           lastPushed: now.toISOString(),
           lastSynced: now.toISOString(),
