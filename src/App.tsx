@@ -42,9 +42,39 @@ export default function App() {
   // Application Startup Loading State with Percentage Progress
   const [isStartupLoading, setIsStartupLoading] = useState<boolean>(false);
   const [startupProgress, setStartupProgress] = useState<number>(100);
-  const [startupStage, setStartupStage] = useState<string>('Gotowe! Cennik aktywny');
+  const [startupStage, setStartupStage] = useState<string>('Wczytywanie bazy...');
   const [startupElapsed, setStartupElapsed] = useState<number>(0);
   const [isStartupTakingLonger, setIsStartupTakingLonger] = useState<boolean>(false);
+
+  // Dedicated Interactive Animation Showcase / Preview Mode (opened on user demand via button)
+  const [isPreviewAnimationOpen, setIsPreviewAnimationOpen] = useState<boolean>(false);
+  const [previewProgress, setPreviewProgress] = useState<number>(64);
+  const [previewStage, setPreviewStage] = useState<string>('Pobieranie parametrów...');
+  const [previewTakingLonger, setPreviewTakingLonger] = useState<boolean>(false);
+  const [previewElapsed, setPreviewElapsed] = useState<number>(1.2);
+
+  const handleReplayPreview = () => {
+    setPreviewProgress(0);
+    setPreviewElapsed(0);
+    setPreviewTakingLonger(false);
+    setPreviewStage('Wczytywanie bazy...');
+
+    let current = 0;
+    const interval = setInterval(() => {
+      current += 2;
+      setPreviewProgress(current);
+      setPreviewElapsed((e) => +(e + 0.05).toFixed(1));
+
+      if (current === 20) setPreviewStage('Inicjalizacja modułów...');
+      else if (current === 50) setPreviewStage('Pobieranie parametrów...');
+      else if (current === 80) setPreviewStage('Weryfikacja danych...');
+      else if (current >= 100) {
+        setPreviewProgress(100);
+        setPreviewStage('Gotowe!');
+        clearInterval(interval);
+      }
+    }, 45);
+  };
 
   // Password Protection for 'wholesale' and 'settings' (starts locked by default)
   const [isWholesaleUnlocked, setIsWholesaleUnlocked] = useState<boolean>(false);
@@ -131,13 +161,15 @@ export default function App() {
 
   // 1. Initial Load and Startup Flow with Percentage Progress Tracking
   const initCatalog = useCallback(async (isDiagnostic = false) => {
-    if (isDiagnostic) {
-      setIsStartupLoading(true);
-      setStartupElapsed(0);
-      setIsStartupTakingLonger(false);
-      setStartupProgress(15);
-      setStartupStage('Inicjalizacja środowiska i pamięci podręcznej...');
-    }
+    setIsStartupLoading(true);
+    setStartupElapsed(0);
+    setIsStartupTakingLonger(false);
+    setStartupProgress(isDiagnostic ? 10 : 25);
+    setStartupStage(
+      isDiagnostic
+        ? 'Diagnostyka systemu...'
+        : 'Wczytywanie bazy...'
+    );
 
     const startTime = Date.now();
 
@@ -145,7 +177,7 @@ export default function App() {
     const elapsedInterval = setInterval(() => {
       const elapsedSec = (Date.now() - startTime) / 1000;
       setStartupElapsed(elapsedSec);
-      if (elapsedSec >= 2.8) {
+      if (elapsedSec >= 2.5) {
         setIsStartupTakingLonger(true);
       }
     }, 100);
@@ -153,26 +185,26 @@ export default function App() {
     // Smooth progress micro-ticker
     const progressInterval = setInterval(() => {
       setStartupProgress((prev) => {
-        if (prev < 98) {
+        if (prev < 96) {
           return prev + 1;
         }
         return prev;
       });
-    }, isDiagnostic ? 80 : 60);
+    }, isDiagnostic ? 50 : 30);
 
-    // Safety timeout: under NO circumstance can startup screen remain active longer than 2.0s
+    // Safety timeout: under no circumstance can startup screen remain active longer than 4.0s
     const safetyTimeout = setTimeout(() => {
       setIsStartupLoading(false);
       clearInterval(elapsedInterval);
       clearInterval(progressInterval);
-    }, 2000);
+    }, 4000);
 
     try {
       // Step 1: Security passwords check (non-blocking)
       syncSecurityPasswordsFromServer().catch(() => {});
-      if (isDiagnostic) await new Promise((r) => setTimeout(r, 180));
-      setStartupProgress(40);
-      setStartupStage('Weryfikacja lokalnej pamięci podręcznej i bazy...');
+      if (isDiagnostic) await new Promise((r) => setTimeout(r, 220));
+      setStartupProgress(45);
+      setStartupStage('Inicjalizacja modułów...');
 
       // Step 2: Load document from storage (local-first, fast)
       const savedDoc = await loadDocumentFromStorage();
@@ -180,36 +212,39 @@ export default function App() {
         setCurrentDocument(savedDoc);
         setIsSavedInMemory(true);
       }
-      if (isDiagnostic) await new Promise((r) => setTimeout(r, 180));
-      setStartupProgress(75);
-      setStartupStage('Wczytywanie bazy modeli samochodów i multimediów...');
+      if (isDiagnostic) await new Promise((r) => setTimeout(r, 260));
+      setStartupProgress(78);
+      setStartupStage('Pobieranie parametrów...');
 
       // Step 3: Automatic GitHub / cloud sync if enabled (async)
       const ghCfg = getGitHubSyncConfig();
       if (ghCfg.enabled && ghCfg.checkOnStartup) {
-        setStartupProgress(88);
-        setStartupStage('Sprawdzanie aktualizacji w chmurze...');
-        pullDatabaseFromGitHub(ghCfg).then((pullRes) => {
-          if (pullRes.success && pullRes.document) {
-            setCurrentDocument(pullRes.document);
-            setIsSavedInMemory(true);
-            showNotification('Baza została zaktualizowana');
-          }
-        }).catch((ghErr) => {
-          console.warn('[App Startup] Automatic GitHub download notice:', ghErr);
-        });
+        setStartupProgress(92);
+        setStartupStage('Weryfikacja danych...');
+        pullDatabaseFromGitHub(ghCfg)
+          .then((pullRes) => {
+            if (pullRes.success && pullRes.document) {
+              setCurrentDocument(pullRes.document);
+              setIsSavedInMemory(true);
+              showNotification('Baza została zaktualizowana');
+            }
+          })
+          .catch((ghErr) => {
+            console.warn('[App Startup] Automatic GitHub download notice:', ghErr);
+          });
       }
 
+      if (isDiagnostic) await new Promise((r) => setTimeout(r, 240));
+
       setStartupProgress(100);
-      setStartupStage('Gotowe! Uruchamianie cennika...');
+      setStartupStage('Gotowe!');
 
       setTimeout(() => {
         clearTimeout(safetyTimeout);
         setIsStartupLoading(false);
         clearInterval(elapsedInterval);
         clearInterval(progressInterval);
-      }, isDiagnostic ? 250 : 120);
-
+      }, isDiagnostic ? 400 : 350);
     } catch (err) {
       console.error('Error reading catalog storage during startup:', err);
       clearTimeout(safetyTimeout);
@@ -771,8 +806,33 @@ export default function App() {
         existingItemsCount={currentDocument.totalRows}
       />
 
+      {/* Dedicated Interactive Animation Showcase / Preview Screen */}
+      {isPreviewAnimationOpen && (
+        <AppStartupLoader
+          progress={previewProgress}
+          stageText={previewStage}
+          onBypassToLocal={() => setIsPreviewAnimationOpen(false)}
+          onRetry={handleReplayPreview}
+          onResetStorage={handleResetStorageStartup}
+          elapsedSeconds={previewElapsed}
+          isTakingLonger={previewTakingLonger}
+          isPreview={true}
+          onClosePreview={() => setIsPreviewAnimationOpen(false)}
+          onReplayPreview={handleReplayPreview}
+          onToggleTakingLonger={() => setPreviewTakingLonger((v) => !v)}
+          onSetProgressManual={(val) => {
+            setPreviewProgress(val);
+            if (val === 0) setPreviewStage('Wczytywanie bazy...');
+            else if (val < 30) setPreviewStage('Inicjalizacja modułów...');
+            else if (val < 70) setPreviewStage('Pobieranie parametrów...');
+            else if (val < 100) setPreviewStage('Weryfikacja danych...');
+            else setPreviewStage('Gotowe!');
+          }}
+        />
+      )}
+
       {/* Percentage-based Startup & Diagnostic Loading Screen */}
-      {isStartupLoading && (
+      {isStartupLoading && !isPreviewAnimationOpen && (
         <AppStartupLoader
           progress={startupProgress}
           stageText={startupStage}

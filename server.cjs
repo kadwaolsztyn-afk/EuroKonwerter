@@ -1330,6 +1330,52 @@ with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
           contentBase64: import_fs.default.readFileSync(SOURCE_CATALOG_FILE).toString("base64")
         });
       }
+      if (import_fs.default.existsSync(GITHUB_CONFIG_FILE)) {
+        filesToPush.push({
+          path: "github-sync-config.json",
+          contentBase64: import_fs.default.readFileSync(GITHUB_CONFIG_FILE).toString("base64")
+        });
+      }
+      if (pushFullCode) {
+        const rootFiles = [
+          "package.json",
+          "tsconfig.json",
+          "vite.config.ts",
+          "index.html",
+          "server.ts",
+          ".gitignore",
+          "vercel.json",
+          "src/main.tsx",
+          "src/App.tsx",
+          "src/types.ts",
+          "src/index.css"
+        ];
+        for (const cf of rootFiles) {
+          const fullP = import_path.default.join(process.cwd(), cf);
+          if (import_fs.default.existsSync(fullP)) {
+            filesToPush.push({
+              path: cf,
+              contentBase64: import_fs.default.readFileSync(fullP).toString("base64")
+            });
+          }
+        }
+        const includeDirs = ["src/components", "src/utils", "src/data"];
+        for (const dir of includeDirs) {
+          const fullDir = import_path.default.join(process.cwd(), dir);
+          if (import_fs.default.existsSync(fullDir)) {
+            const entries = import_fs.default.readdirSync(fullDir);
+            for (const entry of entries) {
+              const entryPath = import_path.default.join(fullDir, entry);
+              if (import_fs.default.statSync(entryPath).isFile() && !entry.startsWith(".")) {
+                filesToPush.push({
+                  path: `${dir}/${entry}`,
+                  contentBase64: import_fs.default.readFileSync(entryPath).toString("base64")
+                });
+              }
+            }
+          }
+        }
+      }
       if (import_fs.default.existsSync(PUBLIC_UPLOADS_DIR)) {
         const uploadFiles = import_fs.default.readdirSync(PUBLIC_UPLOADS_DIR).filter((f) => !f.startsWith(".")).slice(-120);
         for (const uf of uploadFiles) {
@@ -1392,14 +1438,24 @@ with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
         return { success: false, error: `B\u0142\u0105d tworzenia commita: ${err?.message || newCommitRes.statusText}` };
       }
       const newCommitData = await newCommitRes.json();
-      const updateRefRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/git/refs/heads/${branch}`, {
+      let updateRefRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/git/refs/heads/${branch}`, {
         method: "PATCH",
         headers,
         body: JSON.stringify({
           sha: newCommitData.sha,
-          force: true
+          force: false
         })
       });
+      if (!updateRefRes.ok) {
+        updateRefRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/git/refs/heads/${branch}`, {
+          method: "PATCH",
+          headers,
+          body: JSON.stringify({
+            sha: newCommitData.sha,
+            force: true
+          })
+        });
+      }
       if (!updateRefRes.ok) {
         const err = await updateRefRes.json().catch(() => ({}));
         return { success: false, error: `B\u0142\u0105d aktualizacji ga\u0142\u0119zi ${branch}: ${err?.message || updateRefRes.statusText}` };
@@ -1469,12 +1525,12 @@ with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
       const now = /* @__PURE__ */ new Date();
       const versionStr = `2026.03_ALL_v461_SYNC_${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}_${String(now.getHours()).padStart(2, "0")}${String(now.getMinutes()).padStart(2, "0")}`;
       const msg = commitMessage || (pushFullCode ? `Aktualizacja calego programu i bazy EuroKonwerter (${docToPush?.rows?.length || 461} pozycji, ${uploadsCount} zdj\u0119\u0107, wersja ${versionStr}) - Auto-deploy Vercel` : `Aktualizacja bazy (${docToPush?.rows?.length || 461} pozycji, ${uploadsCount} zdj\u0119\u0107, wersja ${versionStr})`);
-      const gitRemoteAuthUrl = `https://x-access-token:${encodeURIComponent(cleanToken)}@github.com/${owner}/${repo}.git`;
+      const gitRemoteAuthUrl = `https://${encodeURIComponent(cleanToken)}@github.com/${owner}/${repo}.git`;
       const execOpts = { cwd: process.cwd(), encoding: "utf-8", timeout: 12e4 };
       try {
         const isGit = import_fs.default.existsSync(import_path.default.join(process.cwd(), ".git"));
         if (!isGit) {
-          import_child_process.default.execSync("git init -b main", execOpts);
+          import_child_process.default.execSync(`git init -b ${branch}`, execOpts);
           import_child_process.default.execSync(`git config user.name "${owner}"`, execOpts);
           import_child_process.default.execSync('git config user.email "kadwaolsztyn@gmail.com"', execOpts);
           import_child_process.default.execSync(`git remote add origin "${gitRemoteAuthUrl}"`, execOpts);
@@ -1483,6 +1539,7 @@ with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
           import_child_process.default.execSync('git config user.email "kadwaolsztyn@gmail.com"', execOpts);
           import_child_process.default.execSync(`git remote set-url origin "${gitRemoteAuthUrl}"`, execOpts);
         }
+        let remoteBranchExists = false;
         try {
           const isShallow = import_fs.default.existsSync(import_path.default.join(process.cwd(), ".git", "shallow"));
           if (isShallow) {
@@ -1494,42 +1551,60 @@ with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
           } else {
             import_child_process.default.execSync(`git fetch origin ${branch}`, execOpts);
           }
+          import_child_process.default.execSync(`git rev-parse --verify origin/${branch}`, execOpts);
+          remoteBranchExists = true;
         } catch (fErr) {
-          console.warn("[Git Push] Fetch warning (proceeding):", fErr.message);
+          console.log("[Git Push] Fetch info (new repository or branch):", fErr.message);
+        }
+        if (remoteBranchExists) {
+          try {
+            import_child_process.default.execSync(`git checkout -B ${branch}`, execOpts);
+            import_child_process.default.execSync(`git reset --mixed origin/${branch}`, execOpts);
+          } catch (resetErr) {
+            console.log("[Git Push] Alignment notice:", resetErr.message);
+          }
         }
         if (pushFullCode) {
           import_child_process.default.execSync("git add -A", execOpts);
         } else {
-          const filesToStage = ["data-catalog.json", "public/data-catalog.json", "src/data/initialCatalog.ts"];
+          const filesToStage = [
+            "data-catalog.json",
+            "public/data-catalog.json",
+            "src/data/initialCatalog.ts",
+            "github-sync-config.json"
+          ];
           if (import_fs.default.existsSync(import_path.default.join(process.cwd(), ".gitignore"))) filesToStage.push(".gitignore");
           if (import_fs.default.existsSync(import_path.default.join(process.cwd(), "public", "uploads"))) filesToStage.push("public/uploads");
-          import_child_process.default.execSync(`git add ${filesToStage.join(" ")}`, execOpts);
+          for (const f of filesToStage) {
+            if (import_fs.default.existsSync(import_path.default.join(process.cwd(), f))) {
+              import_child_process.default.execSync(`git add "${f}"`, execOpts);
+            }
+          }
         }
-        const statusOutput = import_child_process.default.execSync("git status --porcelain", execOpts).trim();
+        const stagedDiff = import_child_process.default.execSync("git diff --cached --name-only", execOpts).trim();
         let commitSha = "";
-        if (statusOutput) {
+        if (stagedDiff) {
           import_child_process.default.execSync(`git commit -m "${msg.replace(/"/g, '\\"')}" --no-verify`, execOpts);
           commitSha = import_child_process.default.execSync("git rev-parse HEAD", execOpts).trim();
         } else {
-          import_child_process.default.execSync(`git commit --allow-empty -m "${msg.replace(/"/g, '\\"')}" --no-verify`, execOpts);
           commitSha = import_child_process.default.execSync("git rev-parse HEAD", execOpts).trim();
         }
         let pushSuccess = false;
         try {
-          import_child_process.default.execSync(`git push origin ${branch}`, execOpts);
+          import_child_process.default.execSync(`git push -u origin ${branch}`, execOpts);
           pushSuccess = true;
         } catch (pushErr) {
-          console.warn("[Git Push] Standard push warning, attempting with upstream tracking:", pushErr.message);
+          console.log("[Git Push] First push attempt info:", pushErr.message);
           try {
+            import_child_process.default.execSync(`git pull --rebase origin ${branch}`, execOpts);
             import_child_process.default.execSync(`git push -u origin ${branch}`, execOpts);
             pushSuccess = true;
-          } catch (uErr) {
-            console.warn("[Git Push] Upstream push failed, attempting with force push:", uErr.message);
+          } catch (rebaseErr) {
             try {
               import_child_process.default.execSync(`git push origin ${branch} --force`, execOpts);
               pushSuccess = true;
             } catch (fErr) {
-              console.warn("[Git Push] Git CLI push failed, falling back to direct GitHub Git Data API:", fErr.message);
+              console.log("[Git Push] Git CLI push fallback notice:", fErr.message);
             }
           }
         }

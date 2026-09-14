@@ -31,3 +31,31 @@ html, body {
   100% { width: 100%; }
 }
 
+@keyframes opticRadar {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes opticRadarReverse {
+  from { transform: rotate(360deg); }
+  to { transform: rotate(0deg); }
+}
+
+@keyframes beamSweep {
+  0% { transform: translateX(-120%); opacity: 0; }
+  35% { opacity: 0.9; }
+  65% { opacity: 0.9; }
+  100% { transform: translateX(120%); opacity: 0; }
+}
+
+@keyframes opticPulse {
+  0%, 100% { transform: scale(1); opacity: 0.85; filter: drop-shadow(0 0 8px rgba(245, 158, 11, 0.2)); }
+  50% { transform: scale(1.03); opacity: 1; filter: drop-shadow(0 0 16px rgba(245, 158, 11, 0.45)); }
+}
+
+@keyframes dynamicBlinker {
+  0% { opacity: 0.2; transform: scaleX(0.85); }
+  50% { opacity: 1; transform: scaleX(1); }
+  100% { opacity: 0.2; transform: scaleX(0.85); }
+}
+

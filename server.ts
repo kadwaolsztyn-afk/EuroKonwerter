@@ -1526,7 +1526,7 @@ async function pushViaGitHubRestApiOnServer(
     // 3. Collect files to push
     const filesToPush: { path: string; contentBase64: string }[] = [];
 
-    // Always include catalog files
+    // Always include catalog files and configs
     if (fs.existsSync(DATA_FILE)) {
       filesToPush.push({
         path: 'data-catalog.json',
@@ -1544,6 +1544,56 @@ async function pushViaGitHubRestApiOnServer(
         path: 'src/data/initialCatalog.ts',
         contentBase64: fs.readFileSync(SOURCE_CATALOG_FILE).toString('base64'),
       });
+    }
+    if (fs.existsSync(GITHUB_CONFIG_FILE)) {
+      filesToPush.push({
+        path: 'github-sync-config.json',
+        contentBase64: fs.readFileSync(GITHUB_CONFIG_FILE).toString('base64'),
+      });
+    }
+
+    if (pushFullCode) {
+      // Include essential root files
+      const rootFiles = [
+        'package.json',
+        'tsconfig.json',
+        'vite.config.ts',
+        'index.html',
+        'server.ts',
+        '.gitignore',
+        'vercel.json',
+        'src/main.tsx',
+        'src/App.tsx',
+        'src/types.ts',
+        'src/index.css',
+      ];
+      for (const cf of rootFiles) {
+        const fullP = path.join(process.cwd(), cf);
+        if (fs.existsSync(fullP)) {
+          filesToPush.push({
+            path: cf,
+            contentBase64: fs.readFileSync(fullP).toString('base64'),
+          });
+        }
+      }
+
+      // Include src subdirectories
+      const includeDirs = ['src/components', 'src/utils', 'src/data'];
+      for (const dir of includeDirs) {
+        const fullDir = path.join(process.cwd(), dir);
+        if (fs.existsSync(fullDir)) {
+          const entries = fs.readdirSync(fullDir);
+          for (const entry of entries) {
+            const entryPath = path.join(fullDir, entry);
+            if (fs.statSync(entryPath).isFile() && !entry.startsWith('.')) {
+              filesToPush.push({
+                path: `${dir}/${entry}`,
+                contentBase64: fs.readFileSync(entryPath).toString('base64'),
+              });
+            }
+          }
+        }
+      }
     }
 
     // Include recent uploaded photos (up to 120 photos)
@@ -1615,15 +1665,25 @@ async function pushViaGitHubRestApiOnServer(
     }
     const newCommitData = (await newCommitRes.json()) as any;
 
-    // 7. Update branch reference
-    const updateRefRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/git/refs/heads/${branch}`, {
+    // 7. Update branch reference (try fast-forward without force first)
+    let updateRefRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/git/refs/heads/${branch}`, {
       method: 'PATCH',
       headers,
       body: JSON.stringify({
         sha: newCommitData.sha,
-        force: true,
+        force: false,
       }),
     });
+    if (!updateRefRes.ok) {
+      updateRefRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/git/refs/heads/${branch}`, {
+        method: 'PATCH',
+        headers,
+        body: JSON.stringify({
+          sha: newCommitData.sha,
+          force: true,
+        }),
+      });
+    }
     if (!updateRefRes.ok) {
       const err = (await updateRefRes.json().catch(() => ({}))) as any;
       return { success: false, error: `Błąd aktualizacji gałęzi ${branch}: ${err?.message || updateRefRes.statusText}` };
@@ -1713,13 +1773,13 @@ async function pushViaGitHubRestApiOnServer(
           ? `Aktualizacja calego programu i bazy EuroKonwerter (${docToPush?.rows?.length || 461} pozycji, ${uploadsCount} zdjęć, wersja ${versionStr}) - Auto-deploy Vercel`
           : `Aktualizacja bazy (${docToPush?.rows?.length || 461} pozycji, ${uploadsCount} zdjęć, wersja ${versionStr})`);
 
-      const gitRemoteAuthUrl = `https://x-access-token:${encodeURIComponent(cleanToken)}@github.com/${owner}/${repo}.git`;
+      const gitRemoteAuthUrl = `https://${encodeURIComponent(cleanToken)}@github.com/${owner}/${repo}.git`;
       const execOpts = { cwd: process.cwd(), encoding: 'utf-8' as const, timeout: 120000 };
 
       try {
         const isGit = fs.existsSync(path.join(process.cwd(), '.git'));
         if (!isGit) {
-          child_process.execSync('git init -b main', execOpts);
+          child_process.execSync(`git init -b ${branch}`, execOpts);
           child_process.execSync(`git config user.name "${owner}"`, execOpts);
           child_process.execSync('git config user.email "kadwaolsztyn@gmail.com"', execOpts);
           child_process.execSync(`git remote add origin "${gitRemoteAuthUrl}"`, execOpts);
@@ -1729,7 +1789,8 @@ async function pushViaGitHubRestApiOnServer(
           child_process.execSync(`git remote set-url origin "${gitRemoteAuthUrl}"`, execOpts);
         }
 
-        // Fetch remote branch safely if possible (unshallow if shallow to prevent shallow update rejection)
+        // Fetch remote branch safely
+        let remoteBranchExists = false;
         try {
           const isShallow = fs.existsSync(path.join(process.cwd(), '.git', 'shallow'));
           if (isShallow) {
@@ -1741,48 +1802,72 @@ async function pushViaGitHubRestApiOnServer(
           } else {
             child_process.execSync(`git fetch origin ${branch}`, execOpts);
           }
+          child_process.execSync(`git rev-parse --verify origin/${branch}`, execOpts);
+          remoteBranchExists = true;
         } catch (fErr: any) {
-          console.warn('[Git Push] Fetch warning (proceeding):', fErr.message);
+          console.log('[Git Push] Fetch info (new repository or branch):', fErr.message);
+        }
+
+        // Align local branch with remote branch cleanly WITHOUT losing any working directory files!
+        if (remoteBranchExists) {
+          try {
+            // Ensure local branch exists and points to branch
+            child_process.execSync(`git checkout -B ${branch}`, execOpts);
+            // Mixed reset sets HEAD and index to origin/${branch}, leaving all workspace files intact as unstaged changes
+            child_process.execSync(`git reset --mixed origin/${branch}`, execOpts);
+          } catch (resetErr: any) {
+            console.log('[Git Push] Alignment notice:', resetErr.message);
+          }
         }
 
         // Stage files based on pushFullCode flag
         if (pushFullCode) {
           child_process.execSync('git add -A', execOpts);
         } else {
-          const filesToStage = ['data-catalog.json', 'public/data-catalog.json', 'src/data/initialCatalog.ts'];
+          const filesToStage = [
+            'data-catalog.json',
+            'public/data-catalog.json',
+            'src/data/initialCatalog.ts',
+            'github-sync-config.json',
+          ];
           if (fs.existsSync(path.join(process.cwd(), '.gitignore'))) filesToStage.push('.gitignore');
           if (fs.existsSync(path.join(process.cwd(), 'public', 'uploads'))) filesToStage.push('public/uploads');
-          child_process.execSync(`git add ${filesToStage.join(' ')}`, execOpts);
+          for (const f of filesToStage) {
+            if (fs.existsSync(path.join(process.cwd(), f))) {
+              child_process.execSync(`git add "${f}"`, execOpts);
+            }
+          }
         }
 
-        // Check if there are staged changes
-        const statusOutput = child_process.execSync('git status --porcelain', execOpts).trim();
+        // Check if there are staged changes against HEAD
+        const stagedDiff = child_process.execSync('git diff --cached --name-only', execOpts).trim();
         let commitSha = '';
-        if (statusOutput) {
+        if (stagedDiff) {
           child_process.execSync(`git commit -m "${msg.replace(/"/g, '\\"')}" --no-verify`, execOpts);
           commitSha = child_process.execSync('git rev-parse HEAD', execOpts).trim();
         } else {
-          child_process.execSync(`git commit --allow-empty -m "${msg.replace(/"/g, '\\"')}" --no-verify`, execOpts);
+          // If no staged differences, we are already synchronized with origin/branch
           commitSha = child_process.execSync('git rev-parse HEAD', execOpts).trim();
         }
 
-        // Attempt pushing via Git CLI with cascading fallbacks
+        // Attempt pushing via Git CLI with upstream tracking
         let pushSuccess = false;
         try {
-          child_process.execSync(`git push origin ${branch}`, execOpts);
+          child_process.execSync(`git push -u origin ${branch}`, execOpts);
           pushSuccess = true;
         } catch (pushErr: any) {
-          console.warn('[Git Push] Standard push warning, attempting with upstream tracking:', pushErr.message);
+          console.log('[Git Push] First push attempt info:', pushErr.message);
           try {
+            // If remote had a concurrent push, pull rebase and push again
+            child_process.execSync(`git pull --rebase origin ${branch}`, execOpts);
             child_process.execSync(`git push -u origin ${branch}`, execOpts);
             pushSuccess = true;
-          } catch (uErr: any) {
-            console.warn('[Git Push] Upstream push failed, attempting with force push:', uErr.message);
+          } catch (rebaseErr: any) {
             try {
               child_process.execSync(`git push origin ${branch} --force`, execOpts);
               pushSuccess = true;
             } catch (fErr: any) {
-              console.warn('[Git Push] Git CLI push failed, falling back to direct GitHub Git Data API:', fErr.message);
+              console.log('[Git Push] Git CLI push fallback notice:', fErr.message);
             }
           }
         }
@@ -1923,7 +2008,8 @@ async function pushViaGitHubRestApiOnServer(
   // Port 3000 is hardcoded by infrastructure and accessed via internal nginx reverse proxy
   const PORT = 3000;
   const server = app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server running on http://0.0.0.0:${PORT} (production: ${process.env.NODE_ENV === 'production'})`);
+    console.log(`Server running on http://localhost:${PORT}`);
+    console.log(`Server running on port ${PORT}`);
   });
 
   server.on('error', (err: any) => {
