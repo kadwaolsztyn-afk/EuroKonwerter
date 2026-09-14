@@ -214,7 +214,10 @@ async function startServer() {
           if (filename.endsWith('.svg')) res.setHeader('Content-Type', 'image/svg+xml');
           else if (filename.endsWith('.png')) res.setHeader('Content-Type', 'image/png');
           else if (filename.endsWith('.ico')) res.setHeader('Content-Type', 'image/x-icon');
-          else if (filename.endsWith('.json')) res.setHeader('Content-Type', 'application/manifest+json');
+          else if (filename.endsWith('.json')) {
+            res.setHeader('Content-Type', 'application/manifest+json');
+            res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+          }
           return res.sendFile(p);
         }
       }
