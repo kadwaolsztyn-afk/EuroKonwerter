@@ -1,0 +1,51 @@
+{
+  "appId": "com.katalog.lampy",
+  "productName": "Cennik konwersji lamp i multimediów",
+  "directories": {
+    "output": "release"
+  },
+  "extraMetadata": {
+    "main": "electron/main.cjs"
+  },
+  "files": [
+    "dist/**/*",
+    "electron/**/*",
+    "package.json"
+  ],
+  "win": {
+    "icon": "electron/icon.ico",
+    "target": [
+      {
+        "target": "nsis",
+        "arch": [
+          "x64",
+          "ia32"
+        ]
+      },
+      {
+        "target": "portable",
+        "arch": [
+          "x64",
+          "ia32"
+        ]
+      }
+    ]
+  },
+  "nsis": {
+    "oneClick": false,
+    "allowToChangeInstallationDirectory": true,
+    "allowElevation": true,
+    "createDesktopShortcut": "always",
+    "createStartMenuShortcut": true,
+    "shortcutName": "Cennik konwersji lamp i multimediów",
+    "uninstallDisplayName": "Cennik konwersji lamp i multimediów (Odinstaluj)",
+    "artifactName": "${productName}-Setup-${arch}.${ext}",
+    "runAfterFinish": true,
+    "deleteAppDataOnUninstall": false,
+    "installerLanguages": [
+      "Polish",
+      "English"
+    ],
+    "language": "1045"
+  }
+}

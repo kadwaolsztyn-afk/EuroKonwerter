@@ -1,0 +1,6 @@
+{
+  "name": "Cennik konwersji lamp i multimediów",
+  "description": "Cennik i katalog konwersji lamp samochodowych oraz adaptacji systemów multimedialnych USA/Europa.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

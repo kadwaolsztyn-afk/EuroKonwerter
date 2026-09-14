@@ -1,0 +1,1961 @@
+import express from 'express';
+import path from 'path';
+import fs from 'fs';
+import child_process from 'child_process';
+import compression from 'compression';
+
+const DATA_FILE = path.join(process.cwd(), 'data-catalog.json');
+const PUBLIC_DATA_FILE = path.join(process.cwd(), 'public', 'data-catalog.json');
+const SOURCE_CATALOG_FILE = path.join(process.cwd(), 'src', 'data', 'initialCatalog.ts');
+const PRICING_SETTINGS_FILE = path.join(process.cwd(), 'pricing-settings.json');
+const UPLOADS_DIR = path.join(process.cwd(), 'uploads');
+const PUBLIC_UPLOADS_DIR = path.join(process.cwd(), 'public', 'uploads');
+
+// Ensure local portable folders exist inside program directory
+try {
+  if (!fs.existsSync(UPLOADS_DIR)) {
+    fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+  }
+  if (!fs.existsSync(PUBLIC_UPLOADS_DIR)) {
+    fs.mkdirSync(PUBLIC_UPLOADS_DIR, { recursive: true });
+  }
+} catch (dirErr) {
+  console.warn('Could not initialize uploads directory:', dirErr);
+}
+
+let cachedCatalogMeta = {
+  version: '2026.03_ALL_v461_OPT_20260910_0851',
+  totalRows: 461,
+  brandsCount: 34,
+  serverUpdatedAt: new Date().toISOString(),
+  lastModified: Date.now(),
+};
+
+try {
+  if (fs.existsSync(DATA_FILE)) {
+    const raw = fs.readFileSync(DATA_FILE, 'utf-8');
+    const doc = JSON.parse(raw);
+    const stats = fs.statSync(DATA_FILE);
+    cachedCatalogMeta = {
+      version: doc.version || '2026.03_ALL_v461_OPT_20260910_0851',
+      totalRows: doc.rows?.length || 461,
+      brandsCount: doc.brandsCount || 34,
+      serverUpdatedAt: doc.serverUpdatedAt || stats.mtime.toISOString(),
+      lastModified: stats.mtimeMs,
+    };
+  }
+} catch (_) {}
+
+/**
+ * Synchronizes the catalog JSON document across all repository and runtime locations:
+ * 1. root data-catalog.json (runtime & portable engine)
+ * 2. public/data-catalog.json (static assets & GitHub repository)
+ * 3. src/data/initialCatalog.ts (TypeScript source code for AI Studio change detection & compilation)
+ */
+function syncDocumentEverywhere(document: any) {
+  try {
+    const now = new Date();
+    if (fs.existsSync(DATA_FILE)) {
+      try {
+        const existingRaw = fs.readFileSync(DATA_FILE, 'utf-8');
+        const existingDoc = JSON.parse(existingRaw);
+        if (existingDoc && Array.isArray(existingDoc.rows) && Array.isArray(document.rows)) {
+          if (existingDoc.rows.length === document.rows.length &&
+              JSON.stringify(existingDoc.rows) === JSON.stringify(document.rows)) {
+            // Data has not changed at all! Retain existing version and timestamp to keep working tree clean.
+            document.version = existingDoc.version;
+            document.serverUpdatedAt = existingDoc.serverUpdatedAt;
+            cachedCatalogMeta = {
+              version: existingDoc.version,
+              totalRows: existingDoc.rows.length,
+              brandsCount: existingDoc.brandsCount || 34,
+              serverUpdatedAt: existingDoc.serverUpdatedAt || now.toISOString(),
+              lastModified: Date.now(),
+            };
+            return;
+          }
+        }
+      } catch (e) {}
+    }
+
+    if (!document.version) {
+      const timeSuffix = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}${String(now.getSeconds()).padStart(2, '0')}_${now.getMilliseconds()}`;
+      document.version = `2026.03_ALL_v461_SYNC_${timeSuffix}`;
+      document.serverUpdatedAt = now.toISOString();
+    }
+
+    const version = document.version;
+    cachedCatalogMeta = {
+      version,
+      totalRows: document.rows?.length || 0,
+      brandsCount: document.brandsCount || 34,
+      serverUpdatedAt: document.serverUpdatedAt || now.toISOString(),
+      lastModified: Date.now(),
+    };
+
+    const jsonStr = JSON.stringify(document, null, 2);
+    if (fs.existsSync(DATA_FILE)) {
+      const existing = fs.readFileSync(DATA_FILE, 'utf-8');
+      if (existing === jsonStr) {
+        // Files are already identical and up to date, avoid modifying file timestamps
+        return;
+      }
+    }
+
+    // 1. Root data-catalog.json
+    fs.writeFileSync(DATA_FILE, jsonStr, 'utf-8');
+
+    // 2. public/data-catalog.json (tracked by Git & served statically)
+    try {
+      const publicDir = path.dirname(PUBLIC_DATA_FILE);
+      if (!fs.existsSync(publicDir)) fs.mkdirSync(publicDir, { recursive: true });
+      fs.writeFileSync(PUBLIC_DATA_FILE, jsonStr, 'utf-8');
+    } catch (pubErr) {
+      console.warn('Could not write to public/data-catalog.json:', pubErr);
+    }
+
+    // 3. src/data/initialCatalog.ts (ensures Google AI Studio & GitHub detect changes directly in source code)
+    try {
+      if (fs.existsSync(SOURCE_CATALOG_FILE)) {
+        const rowsJson = JSON.stringify(document.rows || [], null, 2);
+        const headersJson = JSON.stringify(document.headers || [], null, 4);
+        const imagesJson = JSON.stringify(document.images || [], null, 4);
+        const docName = document.name || 'Baza Pojazdów USA/EU (Cennik 2026 - 461 Pozycji)';
+        const docId = document.id || 'cennik-all-461-master';
+        const totalRows = document.rows ? document.rows.length : 461;
+        const brandsCount = document.brandsCount || 34;
+
+        const tsContent = `import { DocumentRow, ImportedDocument } from '../types';
+
+export const CURRENT_DATABASE_VERSION = ${JSON.stringify(version)};
+
+export const INITIAL_461_CATALOG_ROWS: DocumentRow[] = ${rowsJson};
+
+export const INITIAL_COMPREHENSIVE_CATALOG: ImportedDocument = {
+  id: ${JSON.stringify(docId)},
+  name: ${JSON.stringify(docName)},
+  fileType: "json",
+  sizeFormatted: "320 KB",
+  importedAt: new Date(${JSON.stringify(now.toISOString())}),
+  version: CURRENT_DATABASE_VERSION,
+  totalRows: ${totalRows},
+  brandsCount: ${brandsCount},
+  headers: ${headersJson},
+  images: ${imagesJson},
+  rows: INITIAL_461_CATALOG_ROWS
+};
+
+// Backwards compatibility alias
+export const INITIAL_35_BRANDS_DOCUMENT = INITIAL_COMPREHENSIVE_CATALOG;
+`;
+        fs.writeFileSync(SOURCE_CATALOG_FILE, tsContent, 'utf-8');
+        console.log(`[Source Sync] Successfully synced ${totalRows} rows to src/data/initialCatalog.ts for AI Studio & GitHub.`);
+      }
+    } catch (srcErr) {
+      console.warn('Could not write to src/data/initialCatalog.ts:', srcErr);
+    }
+  } catch (err) {
+    console.error('Error in syncDocumentEverywhere:', err);
+  }
+}
+
+async function startServer() {
+  const app = express();
+
+  // Enable Gzip/Deflate compression for fast loading over mobile and web networks
+  app.use(compression({
+    level: 4,
+    threshold: 1024,
+    filter: (req, res) => {
+      if (req.path.match(/\.(png|jpe?g|webp|svg|ico|gif|woff2?|zip)$/i)) {
+        return false;
+      }
+      return compression.filter(req, res);
+    },
+  }));
+
+  // Allow up to 50MB payload for documents with photos/base64
+  app.use(express.json({ limit: '50mb' }));
+  app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+
+  // Static serving for uploads across local development, distribution build, and container environments
+  const distUploadsDir = path.join(process.cwd(), 'dist', 'uploads');
+  app.use('/uploads', express.static(distUploadsDir, { maxAge: '30d' }));
+  app.use('/uploads', express.static(UPLOADS_DIR, { maxAge: '30d' }));
+  app.use('/uploads', express.static(PUBLIC_UPLOADS_DIR, { maxAge: '30d' }));
+
+  app.get('/favicon.ico', (req, res) => {
+    const candidates = [
+      path.join(process.cwd(), 'dist', 'favicon.ico'),
+      path.join(process.cwd(), 'public', 'favicon.ico'),
+      path.join(process.cwd(), 'dist', 'icon.png'),
+      path.join(process.cwd(), 'public', 'icon.png'),
+    ];
+    for (const p of candidates) {
+      if (fs.existsSync(p)) return res.sendFile(p);
+    }
+    res.status(204).end();
+  });
+
+  app.get(['/apple-touch-icon.png', '/apple-touch-icon-precomposed.png'], (req, res) => {
+    const candidates = [
+      path.join(process.cwd(), 'dist', 'apple-touch-icon.png'),
+      path.join(process.cwd(), 'public', 'icon-192.png'),
+      path.join(process.cwd(), 'dist', 'icon-192.png'),
+      path.join(process.cwd(), 'public', 'icon.png'),
+      path.join(process.cwd(), 'dist', 'icon.png'),
+    ];
+    for (const p of candidates) {
+      if (fs.existsSync(p)) return res.sendFile(p);
+    }
+    res.status(204).end();
+  });
+
+  // Health checks for Cloud Run, Kubernetes, and uptime monitoring
+  app.get(['/api/health', '/health', '/healthz', '/livez', '/readyz', '/_health', '/_ready'], (req, res) => {
+    res.json({
+      status: 'ok',
+      service: 'cennik-server',
+      version: '2026.03_ALL_v461_MASTER_PHOTOS_V5',
+      uptime: process.uptime(),
+      timestamp: new Date().toISOString(),
+    });
+  });
+
+  // GET pricing settings & persistent discount rules
+  app.get('/api/settings/pricing', (req, res) => {
+    try {
+      res.setHeader('Cache-Control', 'no-cache');
+      if (fs.existsSync(PRICING_SETTINGS_FILE)) {
+        const raw = fs.readFileSync(PRICING_SETTINGS_FILE, 'utf-8');
+        try {
+          const settings = JSON.parse(raw);
+          return res.json({ success: true, exists: true, settings });
+        } catch (parseErr: any) {
+          return res.json({ success: true, exists: false, settings: null });
+        }
+      }
+      return res.json({ success: true, exists: false, settings: null });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // SAVE pricing settings & persistent discount rules
+  app.post('/api/settings/pricing', (req, res) => {
+    try {
+      const { settings } = req.body;
+      if (!settings || typeof settings !== 'object') {
+        return res.status(400).json({ success: false, error: 'Nieprawidłowe dane ustawień cenowych.' });
+      }
+      fs.writeFileSync(PRICING_SETTINGS_FILE, JSON.stringify(settings, null, 2), 'utf-8');
+      console.log(`[Pricing Settings] Saved persistent pricing settings to ${PRICING_SETTINGS_FILE}`);
+      return res.json({ success: true, savedAt: new Date().toISOString() });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // Fast metadata/status endpoint for instant device-to-device sync checking (no heavy JSON transfer)
+  app.get('/api/export/project-zip', (req, res) => {
+    try {
+      const zipPath = '/tmp/EuroKonwerter-program-update.zip';
+      child_process.execSync(`python3 -c "
+import os, zipfile
+zip_path = '${zipPath}'
+exclude_dirs = {'node_modules', '.git', 'dist', '.next', '.cache'}
+with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+    for root, dirs, files in os.walk('.'):
+        dirs[:] = [d for d in dirs if d not in exclude_dirs]
+        for f in files:
+            if f.endswith('.zip') or f.endswith('.log') or f.startswith('.'): continue
+            fp = os.path.join(root, f)
+            arcname = os.path.relpath(fp, '.')
+            zipf.write(fp, arcname)
+"`);
+      res.setHeader('Content-Type', 'application/zip');
+      res.setHeader('Content-Disposition', 'attachment; filename="EuroKonwerter-program-update.zip"');
+      return res.sendFile(zipPath);
+    } catch (err: any) {
+      console.error('Error creating project zip:', err);
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  const catalogStatusHandler = (req: any, res: any) => {
+    try {
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+      res.setHeader('Pragma', 'no-cache');
+      const exists = fs.existsSync(DATA_FILE);
+      return res.json({
+        success: true,
+        exists,
+        ...cachedCatalogMeta,
+        timestamp: Date.now(),
+      });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  };
+
+  app.get('/api/catalog/status', catalogStatusHandler);
+  app.get('/api/catalog/info', catalogStatusHandler);
+  app.get('/api/catalog/version', catalogStatusHandler);
+
+  // GET the master saved catalog with cache headers
+  app.get('/api/catalog', (req, res) => {
+    try {
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+      res.setHeader('Pragma', 'no-cache');
+      if (fs.existsSync(DATA_FILE)) {
+        const raw = fs.readFileSync(DATA_FILE, 'utf-8');
+        try {
+          const document = JSON.parse(raw);
+          return res.json({
+            success: true,
+            exists: true,
+            document,
+            version: document.version,
+            serverUpdatedAt: document.serverUpdatedAt || new Date().toISOString(),
+            totalRows: document.rows?.length || 0,
+          });
+        } catch (parseErr: any) {
+          console.error('Error parsing catalog JSON file, treating as absent:', parseErr);
+          return res.json({ success: true, exists: false, document: null, parseError: parseErr.message });
+        }
+      }
+      return res.json({ success: true, exists: false, document: null });
+    } catch (err: any) {
+      console.error('Error reading catalog file:', err);
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // SAVE the master catalog to permanent server storage and sync with source files
+  app.post('/api/catalog', (req, res) => {
+    try {
+      const { document } = req.body;
+      if (!document || !Array.isArray(document.rows)) {
+        return res.status(400).json({
+          success: false,
+          error: 'Nieprawidłowa struktura dokumentu (brak tablicy wierszy).',
+        });
+      }
+
+      syncDocumentEverywhere(document);
+
+      console.log(
+        `[Master Catalog] Saved and synced ${document.rows.length} rows to ${DATA_FILE}, public/data-catalog.json & src/data/initialCatalog.ts (version: ${document.version})`
+      );
+      return res.json({
+        success: true,
+        savedAt: new Date().toISOString(),
+        version: document.version,
+        totalRows: document.rows.length,
+      });
+    } catch (err: any) {
+      console.error('Error writing catalog file:', err);
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // MANUAL SYNC ENDPOINT: Force synchronizes data-catalog.json to src/ and public/ for AI Studio & GitHub
+  app.post('/api/sync/to-source-code', (req, res) => {
+    try {
+      let docToSync = req.body?.document;
+      if (!docToSync && fs.existsSync(DATA_FILE)) {
+        const raw = fs.readFileSync(DATA_FILE, 'utf-8');
+        docToSync = JSON.parse(raw);
+      }
+
+      if (!docToSync || !Array.isArray(docToSync.rows)) {
+        return res.status(400).json({
+          success: false,
+          error: 'Brak poprawnego dokumentu katalogu do synchronizacji.',
+        });
+      }
+
+      syncDocumentEverywhere(docToSync);
+
+      return res.json({
+        success: true,
+        message: `Pomyślnie zsynchronizowano bazę (${docToSync.rows.length} wierszy) oraz zdjęcia do plików źródłowych (src/data/initialCatalog.ts i public/data-catalog.json). Google AI Studio oraz GitHub widzą teraz wszystkie zmiany!`,
+        totalRows: docToSync.rows.length,
+        timestamp: new Date().toISOString(),
+      });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // DELETE/RESET the master catalog
+  app.delete('/api/catalog', (req, res) => {
+    try {
+      if (fs.existsSync(DATA_FILE)) {
+        fs.unlinkSync(DATA_FILE);
+        console.log(`[Master Catalog] Removed ${DATA_FILE}`);
+      }
+      return res.json({ success: true, message: 'Katalog zresetowany' });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // HIGH-FIDELITY SMART IMAGE OPTIMIZER (Sharp + WebP/MozJPEG)
+  // Compresses uploaded photos to take minimum space while preserving crisp visual quality.
+  let cachedSharp: any = null;
+  async function getSharpInstance() {
+    if (cachedSharp) return cachedSharp;
+    try {
+      const s = await import('sharp');
+      cachedSharp = s.default || s;
+      return cachedSharp;
+    } catch (err: any) {
+      console.warn('[Sharp Load Notice] Sharp not loaded, using raw buffer:', err?.message);
+      return null;
+    }
+  }
+
+  interface OptimizedImageResult {
+    buffer: Buffer;
+    ext: string;
+    originalSize: number;
+    optimizedSize: number;
+    savedPercent: string;
+  }
+
+  async function optimizeImageBuffer(
+    rawBuffer: Buffer,
+    mimeOrExt: string,
+    options?: { maxWidth?: number; maxHeight?: number; quality?: number }
+  ): Promise<OptimizedImageResult> {
+    const originalSize = rawBuffer.length;
+    const isSvg = mimeOrExt.includes('svg');
+
+    if (isSvg) {
+      return {
+        buffer: rawBuffer,
+        ext: 'svg',
+        originalSize,
+        optimizedSize: originalSize,
+        savedPercent: '0%',
+      };
+    }
+
+    const maxWidth = options?.maxWidth || 1280;
+    const maxHeight = options?.maxHeight || 1280;
+    const quality = options?.quality || 82;
+
+    const sharp = await getSharpInstance();
+    if (!sharp) {
+      let fallbackExt = 'jpg';
+      if (mimeOrExt.includes('png')) fallbackExt = 'png';
+      else if (mimeOrExt.includes('webp')) fallbackExt = 'webp';
+      return {
+        buffer: rawBuffer,
+        ext: fallbackExt,
+        originalSize,
+        optimizedSize: originalSize,
+        savedPercent: '0%',
+      };
+    }
+
+    try {
+      // 1. Auto-rotate based on EXIF tag (ensures phone camera photos are never upside-down or sideways)
+      // 2. High quality Lanczos3 downsampling up to 1280x1280 (keeps fine lamp LEDs, matrix grids, and text razor-sharp)
+      // 3. WebP with smartSubsample: true (preserves vivid red/amber colors on vehicle lamps without chroma bleeding)
+      // 4. Strip EXIF, GPS, camera metadata to minimize size and protect privacy
+      const optimized = await sharp(rawBuffer)
+        .rotate()
+        .resize({
+          width: maxWidth,
+          height: maxHeight,
+          fit: 'inside',
+          withoutEnlargement: true,
+          kernel: 'lanczos3',
+        })
+        .webp({
+          quality,
+          effort: 6,
+          smartSubsample: true,
+          alphaQuality: 85,
+        })
+        .toBuffer();
+
+      const optimizedSize = optimized.length;
+      const savedPct =
+        originalSize > 0
+          ? (((originalSize - optimizedSize) / originalSize) * 100).toFixed(1)
+          : '0';
+
+      return {
+        buffer: optimized,
+        ext: 'webp',
+        originalSize,
+        optimizedSize,
+        savedPercent: `${savedPct}%`,
+      };
+    } catch (err: any) {
+      console.warn('[Image Optimize Warning]:', err?.message);
+      let fallbackExt = 'jpg';
+      if (mimeOrExt.includes('png')) fallbackExt = 'png';
+      else if (mimeOrExt.includes('webp')) fallbackExt = 'webp';
+      return {
+        buffer: rawBuffer,
+        ext: fallbackExt,
+        originalSize,
+        optimizedSize: originalSize,
+        savedPercent: '0%',
+      };
+    }
+  }
+
+  // UPLOAD IMAGE DIRECTLY TO LOCAL /uploads FOLDER WITH HIGH-QUALITY COMPRESSION
+  app.post('/api/uploads/upload', async (req, res) => {
+    try {
+      const { dataUrl, filename, brand, model, rowId } = req.body;
+      if (!dataUrl || typeof dataUrl !== 'string') {
+        return res.status(400).json({ success: false, error: 'Brak danych zdjęcia (dataUrl).' });
+      }
+
+      // Check if image is base64 dataUrl
+      const matches = dataUrl.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
+      let incomingMime = 'image/jpeg';
+      let rawBuffer: Buffer;
+
+      if (matches && matches.length === 3) {
+        incomingMime = matches[1];
+        rawBuffer = Buffer.from(matches[2], 'base64');
+      } else if (dataUrl.startsWith('data:image/svg+xml')) {
+        incomingMime = 'image/svg+xml';
+        const svgContent = decodeURIComponent(dataUrl.replace('data:image/svg+xml;utf8,', ''));
+        rawBuffer = Buffer.from(svgContent, 'utf-8');
+      } else {
+        return res.status(400).json({ success: false, error: 'Nierozpoznany format danych zdjęcia.' });
+      }
+
+      // Generate clean, safe filename base
+      let safeBase = '';
+      if (brand || model) {
+        safeBase = `${brand || ''}_${model || ''}`.trim().toLowerCase().replace(/[^a-z0-9_-]+/gi, '_');
+      } else if (filename) {
+        safeBase = path.parse(filename).name.toLowerCase().replace(/[^a-z0-9_-]+/gi, '_');
+      }
+      if (!safeBase) safeBase = `foto_${rowId || 'auto'}`;
+
+      // Compress and optimize with Sharp (WebP, Lanczos3, smart subsampling)
+      const { buffer: finalBuffer, ext: finalExt, originalSize, optimizedSize, savedPercent } =
+        await optimizeImageBuffer(rawBuffer, incomingMime);
+
+      const finalFileName = `${safeBase}_${Date.now()}.${finalExt}`;
+      const targetPath = path.join(UPLOADS_DIR, finalFileName);
+      const publicTargetPath = path.join(PUBLIC_UPLOADS_DIR, finalFileName);
+
+      fs.writeFileSync(targetPath, finalBuffer);
+      try {
+        fs.writeFileSync(publicTargetPath, finalBuffer);
+      } catch (_) {}
+
+      console.log(
+        `[Uploads] Compressed & saved image ${finalFileName}: ${(originalSize / 1024).toFixed(1)} KB -> ${(optimizedSize / 1024).toFixed(1)} KB (${savedPercent} space saved)`
+      );
+
+      return res.json({
+        success: true,
+        url: `/uploads/${finalFileName}`,
+        filename: finalFileName,
+        size: optimizedSize,
+        originalSize,
+        savedPercent,
+      });
+    } catch (err: any) {
+      console.error('[Uploads Error]:', err);
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // GET LIST OF ALL SAVED IMAGES IN /uploads
+  app.get('/api/uploads/list', (req, res) => {
+    try {
+      if (!fs.existsSync(UPLOADS_DIR)) {
+        return res.json({ success: true, files: [], totalCount: 0, totalBytes: 0 });
+      }
+      const fileNames = fs.readdirSync(UPLOADS_DIR);
+      let totalBytes = 0;
+      const files = fileNames.map((name) => {
+        const filePath = path.join(UPLOADS_DIR, name);
+        const stats = fs.statSync(filePath);
+        totalBytes += stats.size;
+        return {
+          name,
+          url: `/uploads/${name}`,
+          size: stats.size,
+          mtime: stats.mtime,
+        };
+      });
+
+      return res.json({
+        success: true,
+        files,
+        totalCount: files.length,
+        totalBytes,
+        totalSizeFormatted: `${(totalBytes / 1024 / 1024).toFixed(2)} MB`,
+      });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // OPTIMIZE EXISTING IMAGES IN /uploads TO SAVE DISK SPACE
+  app.post('/api/uploads/optimize-existing', async (req, res) => {
+    try {
+      const sharp = await getSharpInstance();
+      if (!sharp) {
+        return res.json({ success: false, error: 'Biblioteka sharp nie jest dostępna.' });
+      }
+
+      const dirs = [PUBLIC_UPLOADS_DIR, UPLOADS_DIR];
+      let filesOptimized = 0;
+      let totalBytesSaved = 0;
+
+      for (const dir of dirs) {
+        if (!fs.existsSync(dir)) continue;
+        const fileNames = fs.readdirSync(dir);
+
+        for (const name of fileNames) {
+          const filePath = path.join(dir, name);
+          try {
+            const stats = fs.statSync(filePath);
+            // Only optimize files > 120KB
+            if (stats.size > 120 * 1024) {
+              const ext = path.extname(name).toLowerCase();
+              let optimizedBuf: Buffer | null = null;
+
+              if (ext === '.jpg' || ext === '.jpeg') {
+                optimizedBuf = await sharp(filePath)
+                  .rotate()
+                  .resize({ width: 1280, height: 1280, fit: 'inside', withoutEnlargement: true, kernel: 'lanczos3' })
+                  .jpeg({ quality: 82, mozjpeg: true })
+                  .toBuffer();
+              } else if (ext === '.png') {
+                optimizedBuf = await sharp(filePath)
+                  .rotate()
+                  .resize({ width: 1280, height: 1280, fit: 'inside', withoutEnlargement: true, kernel: 'lanczos3' })
+                  .png({ compressionLevel: 9 })
+                  .toBuffer();
+              }
+
+              if (optimizedBuf && optimizedBuf.length < stats.size) {
+                totalBytesSaved += stats.size - optimizedBuf.length;
+                fs.writeFileSync(filePath, optimizedBuf);
+                filesOptimized++;
+              }
+            }
+          } catch (_) {}
+        }
+      }
+
+      return res.json({
+        success: true,
+        filesOptimized,
+        totalBytesSaved,
+        totalSavedFormatted: `${(totalBytesSaved / 1024 / 1024).toFixed(2)} MB`,
+      });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // MIGRATE ANY INLINE BASE64 IMAGES IN CATALOG TO OPTIMIZED PHYSICAL FILES IN /uploads
+  app.post('/api/uploads/migrate-base64', async (req, res) => {
+    try {
+      if (!fs.existsSync(DATA_FILE)) {
+        return res.status(404).json({ success: false, error: 'Brak pliku bazy katalogu (data-catalog.json).' });
+      }
+      const raw = fs.readFileSync(DATA_FILE, 'utf-8');
+      const document = JSON.parse(raw);
+      if (!document || !Array.isArray(document.rows)) {
+        return res.status(400).json({ success: false, error: 'Nieprawidłowa struktura katalogu.' });
+      }
+
+      let migratedCount = 0;
+      for (const row of document.rows) {
+        const cleanBrand = (row.brand || 'auto').toLowerCase().replace(/[^a-z0-9_-]+/gi, '_');
+        const cleanModel = (row.model || 'model').toLowerCase().replace(/[^a-z0-9_-]+/gi, '_');
+
+        if (row.imageUrl && typeof row.imageUrl === 'string' && row.imageUrl.startsWith('data:image/')) {
+          try {
+            const matches = row.imageUrl.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
+            if (matches && matches.length === 3) {
+              const mime = matches[1];
+              const rawBuffer = Buffer.from(matches[2], 'base64');
+              const { buffer: optBuffer, ext } = await optimizeImageBuffer(rawBuffer, mime);
+
+              const fileName = `lampa_${cleanBrand}_${cleanModel}_${row.id}.${ext}`;
+              const targetPath = path.join(UPLOADS_DIR, fileName);
+              const publicTargetPath = path.join(PUBLIC_UPLOADS_DIR, fileName);
+
+              fs.writeFileSync(targetPath, optBuffer);
+              try { fs.writeFileSync(publicTargetPath, optBuffer); } catch (_) {}
+
+              row.imageUrl = `/uploads/${fileName}`;
+              migratedCount++;
+            }
+          } catch (migrateErr) {
+            console.warn(`Could not migrate image for row ${row.id}:`, migrateErr);
+          }
+        }
+
+        if (row.multimediaImageUrl && typeof row.multimediaImageUrl === 'string' && row.multimediaImageUrl.startsWith('data:image/')) {
+          try {
+            const matches = row.multimediaImageUrl.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
+            if (matches && matches.length === 3) {
+              const mime = matches[1];
+              const rawBuffer = Buffer.from(matches[2], 'base64');
+              const { buffer: optBuffer, ext } = await optimizeImageBuffer(rawBuffer, mime);
+
+              const fileName = `multimedia_${cleanBrand}_${cleanModel}_${row.id}.${ext}`;
+              const targetPath = path.join(UPLOADS_DIR, fileName);
+              const publicTargetPath = path.join(PUBLIC_UPLOADS_DIR, fileName);
+
+              fs.writeFileSync(targetPath, optBuffer);
+              try { fs.writeFileSync(publicTargetPath, optBuffer); } catch (_) {}
+
+              row.multimediaImageUrl = `/uploads/${fileName}`;
+              migratedCount++;
+            }
+          } catch (migrateErr) {
+            console.warn(`Could not migrate multimedia image for row ${row.id}:`, migrateErr);
+          }
+        }
+
+        // Also migrate any base64 images in multimediaItems
+        if (Array.isArray(row.multimediaItems)) {
+          for (let mIdx = 0; mIdx < row.multimediaItems.length; mIdx++) {
+            const mItem = row.multimediaItems[mIdx];
+            if (mItem && mItem.imageUrl && typeof mItem.imageUrl === 'string' && mItem.imageUrl.startsWith('data:image/')) {
+              try {
+                const matches = mItem.imageUrl.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
+                if (matches && matches.length === 3) {
+                  const mime = matches[1];
+                  const rawBuffer = Buffer.from(matches[2], 'base64');
+                  const { buffer: optBuffer, ext } = await optimizeImageBuffer(rawBuffer, mime);
+
+                  const fileName = `multimedia_${cleanBrand}_${cleanModel}_${row.id}_${mIdx + 1}.${ext}`;
+                  const targetPath = path.join(UPLOADS_DIR, fileName);
+                  const publicTargetPath = path.join(PUBLIC_UPLOADS_DIR, fileName);
+
+                  fs.writeFileSync(targetPath, optBuffer);
+                  try { fs.writeFileSync(publicTargetPath, optBuffer); } catch (_) {}
+
+                  mItem.imageUrl = `/uploads/${fileName}`;
+                  if (mIdx === 0) {
+                    row.multimediaImageUrl = mItem.imageUrl;
+                  }
+                  migratedCount++;
+                }
+              } catch (migrateErr) {
+                console.warn(`Could not migrate multimediaItem[${mIdx}] for row ${row.id}:`, migrateErr);
+              }
+            }
+          }
+        }
+      }
+
+      if (migratedCount > 0) {
+        syncDocumentEverywhere(document);
+        console.log(`[Uploads Migration] Migrated & compressed ${migratedCount} base64 images into physical /uploads files.`);
+      }
+
+      return res.json({
+        success: true,
+        migratedCount,
+        message: `Pomyślnie przeniesiono i zoptymalizowano ${migratedCount} zdjęć do folderu /uploads.`,
+      });
+    } catch (err: any) {
+      console.error('[Uploads Migration Error]:', err);
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // GET PORTABLE ENVIRONMENT STATUS
+  app.get('/api/portable/info', (req, res) => {
+    try {
+      const dataFileSize = fs.existsSync(DATA_FILE) ? fs.statSync(DATA_FILE).size : 0;
+      const pricingFileSize = fs.existsSync(PRICING_SETTINGS_FILE) ? fs.statSync(PRICING_SETTINGS_FILE).size : 0;
+
+      let uploadsCount = 0;
+      let uploadsSizeBytes = 0;
+      if (fs.existsSync(UPLOADS_DIR)) {
+        const files = fs.readdirSync(UPLOADS_DIR);
+        uploadsCount = files.length;
+        for (const file of files) {
+          try {
+            uploadsSizeBytes += fs.statSync(path.join(UPLOADS_DIR, file)).size;
+          } catch (_) {}
+        }
+      }
+
+      return res.json({
+        success: true,
+        mode: 'W 100% Przenośny (Jeden Folder / Pendrive)',
+        programDirectory: process.cwd(),
+        dataFile: 'data-catalog.json',
+        dataFileSize,
+        pricingSettingsFile: 'pricing-settings.json',
+        pricingFileSize,
+        uploadsDirectory: 'uploads',
+        uploadsCount,
+        uploadsSizeBytes,
+        uploadsSizeFormatted: `${(uploadsSizeBytes / 1024 / 1024).toFixed(2)} MB`,
+        launcherFile: 'Uruchom_Cennik.bat',
+        isIsolated: true,
+        windowsFilesCreated: 0,
+      });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  const GITHUB_CONFIG_FILE = path.join(process.cwd(), 'github-sync-config.json');
+  const GITHUB_SECRET_TOKEN_FILE = path.join(process.cwd(), '.github-secret-token.json');
+
+  function getSavedGitHubSecretToken(): string {
+    try {
+      if (process.env.GITHUB_TOKEN && process.env.GITHUB_TOKEN.trim()) {
+        return process.env.GITHUB_TOKEN.trim();
+      }
+      if (fs.existsSync(GITHUB_SECRET_TOKEN_FILE)) {
+        const raw = fs.readFileSync(GITHUB_SECRET_TOKEN_FILE, 'utf-8');
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed.token === 'string' && parsed.token.trim()) {
+          return parsed.token.trim();
+        }
+      }
+    } catch (_) {}
+    return '';
+  }
+
+  function saveGitHubSecretToken(token: string): void {
+    try {
+      if (token && token.trim()) {
+        fs.writeFileSync(
+          GITHUB_SECRET_TOKEN_FILE,
+          JSON.stringify({ token: token.trim(), updatedAt: new Date().toISOString() }, null, 2),
+          'utf-8'
+        );
+      }
+    } catch (_) {}
+  }
+
+  // GET direct download of current data-catalog.json
+  app.get('/api/catalog/download', (req, res) => {
+    try {
+      res.setHeader('Cache-Control', 'no-cache');
+      if (fs.existsSync(DATA_FILE)) {
+        res.setHeader('Content-Disposition', 'attachment; filename="data-catalog.json"');
+        res.setHeader('Content-Type', 'application/json');
+        return fs.createReadStream(DATA_FILE).pipe(res);
+      }
+      const publicCatalog = path.join(process.cwd(), 'public', 'data-catalog.json');
+      if (fs.existsSync(publicCatalog)) {
+        res.setHeader('Content-Disposition', 'attachment; filename="data-catalog.json"');
+        res.setHeader('Content-Type', 'application/json');
+        return fs.createReadStream(publicCatalog).pipe(res);
+      }
+      return res.status(404).json({ success: false, error: 'Plik katalogu nie został odnaleziony.' });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  const defaultGitHubConfig: {
+    enabled: boolean;
+    checkOnStartup: boolean;
+    repoUrl: string;
+    releaseTag: string;
+    targetAssetFileName: string;
+    lastChecked: any;
+    lastSynced: any;
+    lastVersion: any;
+    githubToken?: string;
+  } = {
+    enabled: true,
+    checkOnStartup: true,
+    repoUrl: 'https://github.com/kadwaolsztyn-afk/EuroKonwerter',
+    releaseTag: 'main',
+    targetAssetFileName: 'data-catalog.json',
+    lastChecked: null,
+    lastSynced: null,
+    lastVersion: null,
+    githubToken: '',
+  };
+
+  // GET GitHub sync configuration
+  app.get('/api/sync/github/config', (req, res) => {
+    try {
+      res.setHeader('Cache-Control', 'no-cache');
+      const savedSecretToken = getSavedGitHubSecretToken();
+      let effectiveConfig = { ...defaultGitHubConfig };
+
+      if (fs.existsSync(GITHUB_CONFIG_FILE)) {
+        const raw = fs.readFileSync(GITHUB_CONFIG_FILE, 'utf-8');
+        try {
+          const cfg = JSON.parse(raw);
+          if (!cfg.repoUrl || cfg.repoUrl.includes('Konwerter-Usa-ECE')) {
+            cfg.repoUrl = 'https://github.com/kadwaolsztyn-afk/EuroKonwerter';
+          }
+          if (!cfg.releaseTag || cfg.releaseTag === 'Konwerter' || cfg.releaseTag === 'Backup' || cfg.releaseTag === 'Baza') {
+            cfg.releaseTag = 'main';
+          }
+          effectiveConfig = { ...defaultGitHubConfig, ...cfg };
+        } catch (_) {}
+      }
+
+      if (savedSecretToken) {
+        effectiveConfig.githubToken = savedSecretToken;
+      }
+
+      return res.json({
+        success: true,
+        config: effectiveConfig,
+        hasSavedToken: Boolean(savedSecretToken),
+      });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // POST GitHub sync configuration
+  app.post('/api/sync/github/config', (req, res) => {
+    try {
+      const { config } = req.body;
+      if (!config || typeof config !== 'object') {
+        return res.status(400).json({ success: false, error: 'Nieprawidłowe dane konfiguracji GitHub.' });
+      }
+      let current = defaultGitHubConfig;
+      if (fs.existsSync(GITHUB_CONFIG_FILE)) {
+        try {
+          current = JSON.parse(fs.readFileSync(GITHUB_CONFIG_FILE, 'utf-8'));
+        } catch {}
+      }
+
+      // Persist secret token securely in gitignored file so it's not lost
+      if (config.githubToken && typeof config.githubToken === 'string' && config.githubToken.trim()) {
+        saveGitHubSecretToken(config.githubToken.trim());
+      }
+
+      // Never save githubToken in git-tracked config file to prevent GitHub push protection blocks
+      const updated = { ...current, ...config, githubToken: '' };
+      fs.writeFileSync(GITHUB_CONFIG_FILE, JSON.stringify(updated, null, 2), 'utf-8');
+
+      const savedSecretToken = getSavedGitHubSecretToken();
+      return res.json({
+        success: true,
+        config: { ...updated, githubToken: savedSecretToken },
+        hasSavedToken: Boolean(savedSecretToken),
+      });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // Security Configuration (Access Passwords for Settings & Wholesale)
+  const SECURITY_CONFIG_FILE = path.join(process.cwd(), 'security-config.json');
+  const defaultSecurityConfig = {
+    settingsPassword: '505690291',
+    wholesalePassword: '505690291',
+    updatedAt: new Date().toISOString(),
+  };
+
+  // GET Security passwords
+  app.get('/api/security/passwords', (req, res) => {
+    try {
+      res.setHeader('Cache-Control', 'no-cache');
+      if (fs.existsSync(SECURITY_CONFIG_FILE)) {
+        const raw = fs.readFileSync(SECURITY_CONFIG_FILE, 'utf-8');
+        try {
+          const cfg = JSON.parse(raw);
+          return res.json({
+            success: true,
+            passwords: {
+              settingsPassword: cfg.settingsPassword || '505690291',
+              wholesalePassword: cfg.wholesalePassword || '505690291',
+              updatedAt: cfg.updatedAt || null,
+            },
+          });
+        } catch {}
+      }
+      return res.json({ success: true, passwords: defaultSecurityConfig });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // POST Security passwords
+  app.post('/api/security/passwords', (req, res) => {
+    try {
+      const { settingsPassword, wholesalePassword } = req.body;
+      let current = { ...defaultSecurityConfig };
+      if (fs.existsSync(SECURITY_CONFIG_FILE)) {
+        try {
+          current = { ...current, ...JSON.parse(fs.readFileSync(SECURITY_CONFIG_FILE, 'utf-8')) };
+        } catch {}
+      }
+      const updated = {
+        settingsPassword: (settingsPassword && typeof settingsPassword === 'string' && settingsPassword.trim())
+          ? settingsPassword.trim()
+          : current.settingsPassword,
+        wholesalePassword: (wholesalePassword && typeof wholesalePassword === 'string' && wholesalePassword.trim())
+          ? wholesalePassword.trim()
+          : current.wholesalePassword,
+        updatedAt: new Date().toISOString(),
+      };
+      fs.writeFileSync(SECURITY_CONFIG_FILE, JSON.stringify(updated, null, 2), 'utf-8');
+      return res.json({ success: true, passwords: updated });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // POST Reset Security passwords
+  app.post('/api/security/passwords/reset', (req, res) => {
+    try {
+      const reset = {
+        settingsPassword: '505690291',
+        wholesalePassword: '505690291',
+        updatedAt: new Date().toISOString(),
+      };
+      fs.writeFileSync(SECURITY_CONFIG_FILE, JSON.stringify(reset, null, 2), 'utf-8');
+      return res.json({ success: true, passwords: reset });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // Helper to extract owner and repo from URL
+  function parseRepo(urlStr: string) {
+    const clean = (urlStr || '').trim().replace(/\/$/, '');
+    const match = clean.match(/github\.com\/([^/]+)\/([^/]+)/i);
+    if (match && match[1] && match[2]) {
+      return { owner: match[1], repo: match[2].replace(/\.git$/, '') };
+    }
+    return { owner: 'kadwaolsztyn-afk', repo: 'EuroKonwerter' };
+  }
+
+  // GET Check GitHub Release or Main branch file
+  app.get('/api/sync/github/check', async (req, res) => {
+    try {
+      res.setHeader('Cache-Control', 'no-cache');
+      let cfg = defaultGitHubConfig;
+      if (fs.existsSync(GITHUB_CONFIG_FILE)) {
+        try {
+          cfg = { ...defaultGitHubConfig, ...JSON.parse(fs.readFileSync(GITHUB_CONFIG_FILE, 'utf-8')) };
+        } catch {}
+      }
+
+      const { owner, repo } = parseRepo(cfg.repoUrl);
+      const tag = cfg.releaseTag && cfg.releaseTag !== 'Baza' ? cfg.releaseTag : 'main';
+      const targetName = (cfg.targetAssetFileName || 'data-catalog.json').toLowerCase();
+
+      console.log(`[GitHub Sync Check] Checking repository ${owner}/${repo} (tag/branch: ${tag})...`);
+
+      // 1. If tag is not 'main', try checking GitHub Releases
+      if (tag !== 'main') {
+        const apiUrl = `https://api.github.com/repos/${owner}/${repo}/releases/tags/${encodeURIComponent(tag)}`;
+        try {
+          const ghRes = await fetch(apiUrl, {
+            headers: {
+              'User-Agent': 'AutoLamp-PriceCatalog-Sync/1.0',
+              'Accept': 'application/vnd.github.v3+json',
+            },
+            signal: AbortSignal.timeout(3500),
+          });
+
+          if (ghRes.ok) {
+            const releaseData: any = await ghRes.json();
+            const assets = (releaseData.assets || []).map((a: any) => ({
+              name: a.name,
+              size: a.size,
+              downloadUrl: a.browser_download_url,
+              updatedAt: a.updated_at,
+              contentType: a.content_type,
+            }));
+
+            const matchingAsset =
+              assets.find((a: any) => a.name.toLowerCase() === targetName) ||
+              assets.find((a: any) => a.name.toLowerCase().endsWith('.json')) ||
+              null;
+
+            return res.json({
+              success: true,
+              connected: true,
+              releaseTag: releaseData.tag_name,
+              releaseName: releaseData.name || releaseData.tag_name,
+              publishedAt: releaseData.published_at,
+              releaseUrl: releaseData.html_url,
+              assets,
+              matchingAsset,
+              directUrls: {
+                raw: `https://raw.githubusercontent.com/${owner}/${repo}/main/data-catalog.json`,
+                cdn: `https://cdn.jsdelivr.net/gh/${owner}/${repo}@main/data-catalog.json`,
+                release: releaseData.html_url,
+              },
+              message: `Połączono z wydaniem GitHub "${releaseData.name || releaseData.tag_name}" (${assets.length} załączników).`,
+            });
+          }
+        } catch (releaseErr) {
+          console.warn('[GitHub Sync Check] Release tag check timed out or failed, falling back to main branch file:', releaseErr);
+        }
+      }
+
+      // 2. Check direct raw file on branch 'main' (primary storage in EuroKonwerter repo)
+      const rawUrl = `https://raw.githubusercontent.com/${owner}/${repo}/main/${cfg.targetAssetFileName || 'data-catalog.json'}`;
+      try {
+        const headRes = await fetch(rawUrl, {
+          method: 'HEAD',
+          headers: { 'User-Agent': 'AutoLamp-PriceCatalog-Sync/1.0' },
+          signal: AbortSignal.timeout(4000),
+        });
+
+        if (headRes.ok) {
+          const lastMod = headRes.headers.get('last-modified');
+          const clen = headRes.headers.get('content-length');
+          const fileSize = clen ? parseInt(clen, 10) : 10517311;
+
+          const rawAsset = {
+            name: cfg.targetAssetFileName || 'data-catalog.json',
+            size: fileSize,
+            downloadUrl: rawUrl,
+            updatedAt: lastMod || new Date().toISOString(),
+            contentType: 'application/json',
+          };
+
+          return res.json({
+            success: true,
+            connected: true,
+            releaseTag: 'main',
+            releaseName: 'Gałąź główna (main)',
+            publishedAt: lastMod || new Date().toISOString(),
+            releaseUrl: `https://github.com/${owner}/${repo}/blob/main/${cfg.targetAssetFileName || 'data-catalog.json'}`,
+            assets: [rawAsset],
+            matchingAsset: rawAsset,
+            directUrls: {
+              raw: rawUrl,
+              cdn: `https://cdn.jsdelivr.net/gh/${owner}/${repo}@main/data-catalog.json`,
+              repo: `https://github.com/${owner}/${repo}/blob/main/data-catalog.json`,
+              exe: `https://github.com/${owner}/${repo}/releases/download/eurokonwenter/Cennik.konwersji.lamp.i.multimediow.exe`,
+            },
+            message: `Połączono z bazą na GitHub (gałąź main, plik ${cfg.targetAssetFileName || 'data-catalog.json'}). Gotowy do pobrania!`,
+          });
+        }
+      } catch (rawErr) {
+        console.warn('[GitHub Sync Check] Raw head check error:', rawErr);
+      }
+
+      // 3. Fallback to check latest release
+      try {
+        const listRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/releases`, {
+          headers: {
+            'User-Agent': 'AutoLamp-PriceCatalog-Sync/1.0',
+            'Accept': 'application/vnd.github.v3+json',
+          },
+          signal: AbortSignal.timeout(3500),
+        });
+        if (listRes.ok) {
+          const releases: any = await listRes.json();
+          if (Array.isArray(releases) && releases.length > 0) {
+            const rel = releases[0];
+            const assets = (rel.assets || []).map((a: any) => ({
+              name: a.name,
+              size: a.size,
+              downloadUrl: a.browser_download_url,
+              updatedAt: a.updated_at,
+              contentType: a.content_type,
+            }));
+            const matchingAsset =
+              assets.find((a: any) => a.name.toLowerCase() === targetName) ||
+              assets.find((a: any) => a.name.toLowerCase().endsWith('.json')) ||
+              null;
+
+            return res.json({
+              success: true,
+              connected: true,
+              releaseTag: rel.tag_name,
+              releaseName: rel.name || rel.tag_name,
+              publishedAt: rel.published_at,
+              releaseUrl: rel.html_url,
+              assets,
+              matchingAsset,
+              directUrls: {
+                raw: `https://raw.githubusercontent.com/${owner}/${repo}/main/data-catalog.json`,
+                cdn: `https://cdn.jsdelivr.net/gh/${owner}/${repo}@main/data-catalog.json`,
+                exe: `https://github.com/${owner}/${repo}/releases/download/eurokonwenter/Cennik.konwersji.lamp.i.multimediow.exe`,
+              },
+              message: `Znaleziono wydanie "${rel.name || rel.tag_name}" w repozytorium ${owner}/${repo}.`,
+            });
+          }
+        }
+      } catch {}
+
+      return res.json({
+        success: true,
+        connected: true,
+        releaseTag: 'main',
+        releaseName: 'Repozytorium GitHub',
+        directUrls: {
+          raw: `https://raw.githubusercontent.com/${owner}/${repo}/main/data-catalog.json`,
+          cdn: `https://cdn.jsdelivr.net/gh/${owner}/${repo}@main/data-catalog.json`,
+          repo: `https://github.com/${owner}/${repo}`,
+        },
+        message: `Dostępne repozytorium ${owner}/${repo}. Kliknij "Pobierz z GitHub", aby zsynchronizować bazę.`,
+      });
+    } catch (err: any) {
+      console.error('[GitHub Sync Check Error]:', err);
+      return res.status(500).json({ success: false, connected: false, error: err.message });
+    }
+  });
+
+  // POST Pull & Apply Database from GitHub
+  app.post('/api/sync/github/pull', async (req, res) => {
+    try {
+      let cfg = { ...defaultGitHubConfig, ...(req.body?.config || {}) };
+      if (fs.existsSync(GITHUB_CONFIG_FILE)) {
+        try {
+          cfg = { ...cfg, ...JSON.parse(fs.readFileSync(GITHUB_CONFIG_FILE, 'utf-8')), ...(req.body?.config || {}) };
+        } catch {}
+      }
+
+      const { owner, repo } = parseRepo(cfg.repoUrl);
+      const tag = cfg.releaseTag && cfg.releaseTag !== 'Baza' ? cfg.releaseTag : 'main';
+
+      // 1. Query release asset if a specific non-main tag is configured
+      let downloadUrl: string | null = null;
+      if (tag !== 'main') {
+        const apiUrl = `https://api.github.com/repos/${owner}/${repo}/releases/tags/${encodeURIComponent(tag)}`;
+        try {
+          const ghRes = await fetch(apiUrl, {
+            headers: {
+              'User-Agent': 'AutoLamp-PriceCatalog-Sync/1.0',
+              'Accept': 'application/vnd.github.v3+json',
+            },
+            signal: AbortSignal.timeout(3500),
+          });
+          if (ghRes.ok) {
+            const releaseData: any = await ghRes.json();
+            const assets = releaseData.assets || [];
+            const targetName = (cfg.targetAssetFileName || 'data-catalog.json').toLowerCase();
+            const found =
+              assets.find((a: any) => a.name.toLowerCase() === targetName) ||
+              assets.find((a: any) => a.name.toLowerCase().endsWith('.json'));
+            if (found && found.browser_download_url) {
+              downloadUrl = found.browser_download_url;
+            }
+          }
+        } catch (checkErr) {
+          console.warn('Could not query release assets:', checkErr);
+        }
+      }
+
+      // 2. High-speed prioritized URLs: Direct Raw GitHub on main, jsDelivr CDN on main, Releases
+      const urlsToTry = [
+        `https://raw.githubusercontent.com/${owner}/${repo}/main/${cfg.targetAssetFileName || 'data-catalog.json'}`,
+        `https://cdn.jsdelivr.net/gh/${owner}/${repo}@main/${cfg.targetAssetFileName || 'data-catalog.json'}`,
+        downloadUrl,
+        `https://raw.githubusercontent.com/${owner}/${repo}/main/backup.json`,
+        `https://raw.githubusercontent.com/${owner}/${repo}/main/baza.json`,
+        `https://cdn.jsdelivr.net/gh/${owner}/${repo}@main/backup.json`,
+        `https://raw.githubusercontent.com/${owner}/${repo}/refs/tags/${encodeURIComponent(tag)}/data-catalog.json`,
+        `https://github.com/${owner}/${repo}/releases/download/${encodeURIComponent(tag)}/${cfg.targetAssetFileName || 'data-catalog.json'}`,
+        `https://github.com/${owner}/${repo}/releases/download/${encodeURIComponent(tag)}/backup.json`,
+        `https://cdn.jsdelivr.net/gh/${owner}/${repo}@${encodeURIComponent(tag)}/data-catalog.json`,
+      ].filter(Boolean) as string[];
+
+      let fileContent: string | null = null;
+      let usedUrl: string | null = null;
+
+      for (const url of urlsToTry) {
+        try {
+          console.log(`[GitHub Sync Pull] Fetching from ${url}...`);
+          const fileRes = await fetch(url, {
+            headers: {
+              'User-Agent': 'AutoLamp-PriceCatalog-Sync/1.0',
+              'Accept': 'application/json, text/plain, */*',
+            },
+            signal: AbortSignal.timeout(3500),
+          });
+          if (fileRes.ok) {
+            const text = await fileRes.text();
+            if (text && (text.trim().startsWith('{') || text.trim().startsWith('['))) {
+              fileContent = text;
+              usedUrl = url;
+              console.log(`[GitHub Sync Pull] Successfully retrieved database from: ${url}`);
+              break;
+            }
+          }
+        } catch (fetchErr) {
+          // continue to next URL
+        }
+      }
+
+      // Fallback: If remote GitHub fetching was blocked/rate-limited, read the local bundled data-catalog.json or initial catalog
+      if (!fileContent) {
+        const publicCatalogPath = path.join(process.cwd(), 'public', 'data-catalog.json');
+        if (fs.existsSync(publicCatalogPath)) {
+          try {
+            fileContent = fs.readFileSync(publicCatalogPath, 'utf-8');
+            usedUrl = 'local-bundled:/data-catalog.json';
+            console.log('[GitHub Sync Pull] Using local bundled data-catalog.json fallback.');
+          } catch {}
+        }
+      }
+
+      if (!fileContent) {
+        return res.status(404).json({
+          success: false,
+          error: `Nie odnaleziono pliku ${cfg.targetAssetFileName} w GitHub Release (${tag}) ani w repozytorium ${owner}/${repo}.`,
+        });
+      }
+
+      let parsedPayload: any = null;
+      try {
+        parsedPayload = JSON.parse(fileContent);
+      } catch (parseErr) {
+        console.warn('[GitHub Sync Pull] JSON parse error on content from', usedUrl, parseErr);
+        const publicCatalogPath = path.join(process.cwd(), 'public', 'data-catalog.json');
+        if (fs.existsSync(publicCatalogPath)) {
+          try {
+            const fallbackContent = fs.readFileSync(publicCatalogPath, 'utf-8');
+            parsedPayload = JSON.parse(fallbackContent);
+            usedUrl = 'local-bundled:/data-catalog.json';
+          } catch {}
+        }
+      }
+
+      if (!parsedPayload) {
+        return res.status(400).json({
+          success: false,
+          error: 'Pobrany plik z repozytorium GitHub zawiera nieprawidłowy format JSON.',
+        });
+      }
+
+      let documentToSave: any = null;
+
+      if (parsedPayload.document && Array.isArray(parsedPayload.document.rows)) {
+        documentToSave = parsedPayload.document;
+      } else if (Array.isArray(parsedPayload.rows)) {
+        documentToSave = parsedPayload;
+      } else if (Array.isArray(parsedPayload)) {
+        documentToSave = {
+          id: `doc-github-sync-${Date.now()}`,
+          name: 'Baza Lamp Samochodowych (GitHub Online)',
+          fileType: 'json',
+          sizeFormatted: `${Math.round(fileContent.length / 1024)} KB`,
+          importedAt: new Date().toISOString(),
+          totalRows: parsedPayload.length,
+          brandsCount: new Set(parsedPayload.map((r: any) => r.brand)).size,
+          rows: parsedPayload,
+          images: [],
+          headers: ['Lp.', 'Marka', 'Model', 'Generacja / Kod', 'Roczniki', 'Cena Stat. Klient', 'Cena Dyn. Klient'],
+        };
+      } else if (parsedPayload.rawHtml && typeof parsedPayload.rawHtml === 'string') {
+        documentToSave = parsedPayload;
+      }
+
+      if (!documentToSave || !Array.isArray(documentToSave.rows) || documentToSave.rows.length === 0) {
+        return res.status(400).json({
+          success: false,
+          error: 'Pobrany plik nie posiada poprawnej struktury katalogu modeli.',
+        });
+      }
+
+      // Sync everywhere: DATA_FILE, public/data-catalog.json & src/data/initialCatalog.ts
+      syncDocumentEverywhere(documentToSave);
+
+      // Update sync config
+      const updatedConfig = {
+        ...cfg,
+        lastSynced: new Date().toISOString(),
+        lastChecked: new Date().toISOString(),
+        lastVersion: tag,
+        lastTotalRows: documentToSave.rows.length,
+      };
+      fs.writeFileSync(GITHUB_CONFIG_FILE, JSON.stringify(updatedConfig, null, 2), 'utf-8');
+
+      console.log(`[GitHub Sync Pull] Successfully synced ${documentToSave.rows.length} rows from ${usedUrl}`);
+
+      return res.json({
+        success: true,
+        document: documentToSave,
+        totalRows: documentToSave.rows.length,
+        brandsCount: documentToSave.brandsCount || new Set(documentToSave.rows.map((r: any) => r.brand)).size,
+        usedUrl,
+        syncedAt: new Date().toISOString(),
+        message: 'Baza została zaktualizowana',
+      });
+    } catch (err: any) {
+      console.error('[GitHub Sync Pull Error]:', err);
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // POST Sync directly from any URL (GitHub Raw, jsDelivr CDN, Vercel, Google Drive, etc.)
+  app.post('/api/sync/url', async (req, res) => {
+    try {
+      res.setHeader('Cache-Control', 'no-cache');
+      const { url } = req.body;
+      if (!url || typeof url !== 'string' || !url.trim()) {
+        return res.status(400).json({ success: false, error: 'Brak adresu URL do pobrania bazy.' });
+      }
+
+      const targetUrl = url.trim();
+      console.log(`[URL Sync] Fetching database directly from ${targetUrl}...`);
+
+      const response = await fetch(targetUrl, {
+        headers: {
+          'User-Agent': 'AutoLamp-PriceCatalog-Sync/1.0',
+          'Accept': 'application/json, text/plain, */*',
+        },
+        signal: AbortSignal.timeout(35000),
+      });
+
+      if (!response.ok) {
+        return res.status(response.status).json({
+          success: false,
+          error: `Serwer zwrócił błąd HTTP ${response.status} (${response.statusText}) podczas pobierania z podanego linku.`,
+        });
+      }
+
+      const text = await response.text();
+      let parsed: any;
+      try {
+        parsed = JSON.parse(text);
+      } catch (parseErr: any) {
+        return res.status(400).json({
+          success: false,
+          error: `Pobrany plik nie jest poprawnym plikiem JSON: ${parseErr.message}`,
+        });
+      }
+
+      let documentToSave: any = null;
+      if (parsed && Array.isArray(parsed.rows)) {
+        documentToSave = parsed;
+      } else if (parsed && parsed.document && Array.isArray(parsed.document.rows)) {
+        documentToSave = parsed.document;
+      } else if (Array.isArray(parsed)) {
+        documentToSave = {
+          id: `doc-url-import-${Date.now()}`,
+          name: 'Importowany katalog z linku URL',
+          importedAt: new Date().toISOString(),
+          totalRows: parsed.length,
+          brandsCount: new Set(parsed.map((r: any) => r.brand)).size,
+          rows: parsed,
+          images: [],
+          sizeFormatted: `${Math.round(text.length / 1024)} KB`,
+          version: `URL_IMPORT_${new Date().toISOString().replace(/\D/g, '').slice(0, 12)}`,
+        };
+      } else {
+        return res.status(400).json({
+          success: false,
+          error: 'Pobrany plik JSON nie zawiera prawidłowej bazy danych (brak pola rows).',
+        });
+      }
+
+      syncDocumentEverywhere(documentToSave);
+
+      // Save sync config
+      if (fs.existsSync(GITHUB_CONFIG_FILE)) {
+        try {
+          const cfg = JSON.parse(fs.readFileSync(GITHUB_CONFIG_FILE, 'utf-8'));
+          cfg.lastSynced = new Date().toISOString();
+          cfg.lastVersion = documentToSave.version || 'URL_SYNC';
+          cfg.lastTotalRows = documentToSave.rows.length;
+          fs.writeFileSync(GITHUB_CONFIG_FILE, JSON.stringify(cfg, null, 2), 'utf-8');
+        } catch {}
+      }
+
+      return res.json({
+        success: true,
+        document: documentToSave,
+        totalRows: documentToSave.rows.length,
+        brandsCount: documentToSave.brandsCount,
+        usedUrl: targetUrl,
+        message: 'Baza została zaktualizowana',
+      });
+    } catch (err: any) {
+      console.error('[URL Sync Error]:', err);
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+async function pushViaGitHubRestApiOnServer(
+  owner: string,
+  repo: string,
+  branch: string,
+  token: string,
+  commitMessage: string,
+  pushFullCode = false
+): Promise<{ success: boolean; commitSha?: string; error?: string }> {
+  try {
+    const cleanToken = token.trim();
+    const headers: Record<string, string> = {
+      Accept: 'application/vnd.github.v3+json',
+      Authorization: cleanToken.startsWith('Bearer ') || cleanToken.startsWith('token ') ? cleanToken : `Bearer ${cleanToken}`,
+      'Content-Type': 'application/json',
+      'User-Agent': 'EuroKonwerter-Sync',
+    };
+
+    // 1. Get latest commit SHA on branch
+    const refRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/git/refs/heads/${branch}`, { headers });
+    if (!refRes.ok) {
+      const err = (await refRes.json().catch(() => ({}))) as any;
+      return { success: false, error: `Nie można pobrać gałęzi ${branch}: ${err?.message || refRes.statusText}` };
+    }
+    const refData = (await refRes.json()) as any;
+    const latestCommitSha = refData.object.sha;
+
+    // 2. Get base tree SHA from latest commit
+    const commitRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/git/commits/${latestCommitSha}`, { headers });
+    if (!commitRes.ok) {
+      const err = (await commitRes.json().catch(() => ({}))) as any;
+      return { success: false, error: `Nie można pobrać commita: ${err?.message || commitRes.statusText}` };
+    }
+    const commitData = (await commitRes.json()) as any;
+    const baseTreeSha = commitData.tree.sha;
+
+    // 3. Collect files to push
+    const filesToPush: { path: string; contentBase64: string }[] = [];
+
+    // Always include catalog files
+    if (fs.existsSync(DATA_FILE)) {
+      filesToPush.push({
+        path: 'data-catalog.json',
+        contentBase64: fs.readFileSync(DATA_FILE).toString('base64'),
+      });
+    }
+    if (fs.existsSync(PUBLIC_DATA_FILE)) {
+      filesToPush.push({
+        path: 'public/data-catalog.json',
+        contentBase64: fs.readFileSync(PUBLIC_DATA_FILE).toString('base64'),
+      });
+    }
+    if (fs.existsSync(SOURCE_CATALOG_FILE)) {
+      filesToPush.push({
+        path: 'src/data/initialCatalog.ts',
+        contentBase64: fs.readFileSync(SOURCE_CATALOG_FILE).toString('base64'),
+      });
+    }
+
+    // Include recent uploaded photos (up to 120 photos)
+    if (fs.existsSync(PUBLIC_UPLOADS_DIR)) {
+      const uploadFiles = fs.readdirSync(PUBLIC_UPLOADS_DIR).filter((f) => !f.startsWith('.')).slice(-120);
+      for (const uf of uploadFiles) {
+        try {
+          const filePath = path.join(PUBLIC_UPLOADS_DIR, uf);
+          filesToPush.push({
+            path: `public/uploads/${uf}`,
+            contentBase64: fs.readFileSync(filePath).toString('base64'),
+          });
+        } catch (_) {}
+      }
+    }
+
+    // 4. Create blobs for each file
+    const treeItems: any[] = [];
+    for (const file of filesToPush) {
+      const blobRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/git/blobs`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          content: file.contentBase64,
+          encoding: 'base64',
+        }),
+      });
+      if (!blobRes.ok) {
+        const err = (await blobRes.json().catch(() => ({}))) as any;
+        return { success: false, error: `Błąd tworzenia blobu dla ${file.path}: ${err?.message || blobRes.statusText}` };
+      }
+      const blobData = (await blobRes.json()) as any;
+      treeItems.push({
+        path: file.path,
+        mode: '100644',
+        type: 'blob',
+        sha: blobData.sha,
+      });
+    }
+
+    // 5. Create tree
+    const newTreeRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/git/trees`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        base_tree: baseTreeSha,
+        tree: treeItems,
+      }),
+    });
+    if (!newTreeRes.ok) {
+      const err = (await newTreeRes.json().catch(() => ({}))) as any;
+      return { success: false, error: `Błąd tworzenia drzewa git: ${err?.message || newTreeRes.statusText}` };
+    }
+    const newTreeData = (await newTreeRes.json()) as any;
+
+    // 6. Create commit
+    const newCommitRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/git/commits`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        message: commitMessage,
+        tree: newTreeData.sha,
+        parents: [latestCommitSha],
+      }),
+    });
+    if (!newCommitRes.ok) {
+      const err = (await newCommitRes.json().catch(() => ({}))) as any;
+      return { success: false, error: `Błąd tworzenia commita: ${err?.message || newCommitRes.statusText}` };
+    }
+    const newCommitData = (await newCommitRes.json()) as any;
+
+    // 7. Update branch reference
+    const updateRefRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/git/refs/heads/${branch}`, {
+      method: 'PATCH',
+      headers,
+      body: JSON.stringify({
+        sha: newCommitData.sha,
+        force: true,
+      }),
+    });
+    if (!updateRefRes.ok) {
+      const err = (await updateRefRes.json().catch(() => ({}))) as any;
+      return { success: false, error: `Błąd aktualizacji gałęzi ${branch}: ${err?.message || updateRefRes.statusText}` };
+    }
+
+    return { success: true, commitSha: newCommitData.sha };
+  } catch (err: any) {
+    return { success: false, error: err?.message || 'Błąd połączenia z API GitHub' };
+  }
+}
+
+  // POST Push local database or FULL project source code and all image assets to GitHub repository
+  app.post('/api/sync/github/push', async (req, res) => {
+    try {
+      const { document, token, repoUrl, commitMessage, branch = 'main', pushFullCode = false } = req.body;
+
+      // 1. Resolve GitHub token
+      let cfg: any = defaultGitHubConfig;
+      if (fs.existsSync(GITHUB_CONFIG_FILE)) {
+        try {
+          cfg = JSON.parse(fs.readFileSync(GITHUB_CONFIG_FILE, 'utf-8'));
+        } catch {}
+      }
+
+      let authToken = token || req.headers.authorization?.replace(/^Bearer\s+/i, '') || getSavedGitHubSecretToken() || process.env.GITHUB_TOKEN || cfg.githubToken;
+      if (!authToken || !authToken.trim()) {
+        return res.status(400).json({
+          success: false,
+          error: 'Brak tokena GitHub (Personal Access Token). Wklej token w ustawieniach bazy, aby wysłać zmiany.',
+        });
+      }
+
+      const cleanToken = authToken.trim();
+      saveGitHubSecretToken(cleanToken);
+
+      const effectiveRepoUrl = repoUrl || cfg.repoUrl || 'https://github.com/kadwaolsztyn-afk/EuroKonwerter';
+      const { owner, repo } = parseRepo(effectiveRepoUrl);
+
+      // 2. If a document payload is provided, process base64 images and sync to disk
+      let docToPush = document;
+      if (docToPush && Array.isArray(docToPush.rows)) {
+        for (const row of docToPush.rows) {
+          if (row.imageUrl && typeof row.imageUrl === 'string' && row.imageUrl.startsWith('data:image/')) {
+            const matches = row.imageUrl.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
+            if (matches && matches.length === 3) {
+              const mime = matches[1];
+              const rawBuffer = Buffer.from(matches[2], 'base64');
+              const { buffer: optBuffer, ext } = await optimizeImageBuffer(rawBuffer, mime);
+
+              const cleanBrand = (row.brand || 'auto').toLowerCase().replace(/[^a-z0-9_-]+/gi, '_');
+              const cleanModel = (row.model || 'model').toLowerCase().replace(/[^a-z0-9_-]+/gi, '_');
+              const fileName = `lampa_${cleanBrand}_${cleanModel}_${row.id}.${ext}`;
+
+              const targetPath = path.join(UPLOADS_DIR, fileName);
+              const publicTargetPath = path.join(PUBLIC_UPLOADS_DIR, fileName);
+
+              try {
+                fs.writeFileSync(targetPath, optBuffer);
+                fs.writeFileSync(publicTargetPath, optBuffer);
+                row.imageUrl = `/uploads/${fileName}`;
+              } catch (writeImgErr) {
+                console.warn('Failed writing image to uploads:', writeImgErr);
+              }
+            }
+          }
+        }
+        docToPush.rawHtml = '';
+        syncDocumentEverywhere(docToPush);
+      } else if (fs.existsSync(DATA_FILE)) {
+        try {
+          docToPush = JSON.parse(fs.readFileSync(DATA_FILE, 'utf-8'));
+        } catch {}
+      }
+
+      // 3. Count available photos in public/uploads
+      let uploadsCount = 0;
+      if (fs.existsSync(PUBLIC_UPLOADS_DIR)) {
+        uploadsCount = fs.readdirSync(PUBLIC_UPLOADS_DIR).length;
+      }
+
+      // 4. Git commit and push
+      const now = new Date();
+      const versionStr = `2026.03_ALL_v461_SYNC_${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`;
+      const msg =
+        commitMessage ||
+        (pushFullCode
+          ? `Aktualizacja calego programu i bazy EuroKonwerter (${docToPush?.rows?.length || 461} pozycji, ${uploadsCount} zdjęć, wersja ${versionStr}) - Auto-deploy Vercel`
+          : `Aktualizacja bazy (${docToPush?.rows?.length || 461} pozycji, ${uploadsCount} zdjęć, wersja ${versionStr})`);
+
+      const gitRemoteAuthUrl = `https://x-access-token:${encodeURIComponent(cleanToken)}@github.com/${owner}/${repo}.git`;
+      const execOpts = { cwd: process.cwd(), encoding: 'utf-8' as const, timeout: 120000 };
+
+      try {
+        const isGit = fs.existsSync(path.join(process.cwd(), '.git'));
+        if (!isGit) {
+          child_process.execSync('git init -b main', execOpts);
+          child_process.execSync(`git config user.name "${owner}"`, execOpts);
+          child_process.execSync('git config user.email "kadwaolsztyn@gmail.com"', execOpts);
+          child_process.execSync(`git remote add origin "${gitRemoteAuthUrl}"`, execOpts);
+        } else {
+          child_process.execSync(`git config user.name "${owner}"`, execOpts);
+          child_process.execSync('git config user.email "kadwaolsztyn@gmail.com"', execOpts);
+          child_process.execSync(`git remote set-url origin "${gitRemoteAuthUrl}"`, execOpts);
+        }
+
+        // Fetch remote branch safely if possible (unshallow if shallow to prevent shallow update rejection)
+        try {
+          const isShallow = fs.existsSync(path.join(process.cwd(), '.git', 'shallow'));
+          if (isShallow) {
+            try {
+              child_process.execSync(`git fetch --unshallow origin ${branch}`, execOpts);
+            } catch (_) {
+              child_process.execSync(`git fetch origin ${branch}`, execOpts);
+            }
+          } else {
+            child_process.execSync(`git fetch origin ${branch}`, execOpts);
+          }
+        } catch (fErr: any) {
+          console.warn('[Git Push] Fetch warning (proceeding):', fErr.message);
+        }
+
+        // Stage files based on pushFullCode flag
+        if (pushFullCode) {
+          child_process.execSync('git add -A', execOpts);
+        } else {
+          const filesToStage = ['data-catalog.json', 'public/data-catalog.json', 'src/data/initialCatalog.ts'];
+          if (fs.existsSync(path.join(process.cwd(), '.gitignore'))) filesToStage.push('.gitignore');
+          if (fs.existsSync(path.join(process.cwd(), 'public', 'uploads'))) filesToStage.push('public/uploads');
+          child_process.execSync(`git add ${filesToStage.join(' ')}`, execOpts);
+        }
+
+        // Check if there are staged changes
+        const statusOutput = child_process.execSync('git status --porcelain', execOpts).trim();
+        let commitSha = '';
+        if (statusOutput) {
+          child_process.execSync(`git commit -m "${msg.replace(/"/g, '\\"')}" --no-verify`, execOpts);
+          commitSha = child_process.execSync('git rev-parse HEAD', execOpts).trim();
+        } else {
+          child_process.execSync(`git commit --allow-empty -m "${msg.replace(/"/g, '\\"')}" --no-verify`, execOpts);
+          commitSha = child_process.execSync('git rev-parse HEAD', execOpts).trim();
+        }
+
+        // Attempt pushing via Git CLI with cascading fallbacks
+        let pushSuccess = false;
+        try {
+          child_process.execSync(`git push origin ${branch}`, execOpts);
+          pushSuccess = true;
+        } catch (pushErr: any) {
+          console.warn('[Git Push] Standard push warning, attempting with upstream tracking:', pushErr.message);
+          try {
+            child_process.execSync(`git push -u origin ${branch}`, execOpts);
+            pushSuccess = true;
+          } catch (uErr: any) {
+            console.warn('[Git Push] Upstream push failed, attempting with force push:', uErr.message);
+            try {
+              child_process.execSync(`git push origin ${branch} --force`, execOpts);
+              pushSuccess = true;
+            } catch (fErr: any) {
+              console.warn('[Git Push] Git CLI push failed, falling back to direct GitHub Git Data API:', fErr.message);
+            }
+          }
+        }
+
+        // Fallback: If local git CLI failed for any reason (shallow clone, git lock, permissions), use official GitHub REST API!
+        if (!pushSuccess) {
+          console.log('[Git Push] Executing direct GitHub Git Data API fallback from server...');
+          const restResult = await pushViaGitHubRestApiOnServer(owner, repo, branch, cleanToken, msg, pushFullCode);
+          if (!restResult.success) {
+            throw new Error(restResult.error || 'Błąd wysyłania przez Git CLI oraz GitHub API');
+          }
+          commitSha = restResult.commitSha || commitSha;
+        }
+
+        // Update config without exposing token in git-tracked file
+        const updatedConfig = {
+          ...cfg,
+          githubToken: '',
+          repoUrl: effectiveRepoUrl,
+          lastPushed: now.toISOString(),
+          lastSynced: now.toISOString(),
+          lastVersion: versionStr,
+          lastTotalRows: docToPush?.rows?.length || 461,
+        };
+        fs.writeFileSync(GITHUB_CONFIG_FILE, JSON.stringify(updatedConfig, null, 2), 'utf-8');
+
+        return res.json({
+          success: true,
+          message: pushFullCode
+            ? `Pomyślnie wysłano CAŁY KOD PROGRAMU (pliki aplikacji, interfejs, serwer i bazę) do GitHub (${owner}/${repo})! Vercel natychmiast rozpoczął budowanie i publikację nowej wersji online.`
+            : `Pomyślnie wysłano zaktualizowaną bazę (${docToPush?.rows?.length || 461} modeli) oraz ${uploadsCount} zdjęć z folderu public/uploads/ do GitHub (${owner}/${repo})! Vercel automatycznie rozpoczyna publikację online.`,
+          uploadsCount,
+          totalRows: docToPush?.rows?.length || 461,
+          commitSha,
+          version: versionStr,
+          isFullCode: !!pushFullCode,
+        });
+      } finally {
+        // Sanitize remote URL so token is never saved in .git/config
+        try {
+          child_process.execSync(`git remote set-url origin "https://github.com/${owner}/${repo}.git"`, { cwd: process.cwd() });
+        } catch (_) {}
+      }
+    } catch (err: any) {
+      console.error('[GitHub Push Error]:', err);
+      return res.status(500).json({
+        success: false,
+        error: `Błąd podczas wysyłania do GitHub: ${err.stderr || err.message || 'Nieznany błąd'}`,
+      });
+    }
+  });
+
+  // Catch-all for unmatched API routes to ensure JSON 404 instead of SPA HTML
+  app.all('/api/*', (req, res) => {
+    res.status(404).json({ success: false, error: 'Endpoint not found', path: req.path });
+  });
+
+  // Production vs Dev detection:
+  // In production (NODE_ENV=production), serve static assets directly with gzip compression.
+  // In development, mount Vite middleware.
+  const isProduction = process.env.NODE_ENV === 'production';
+
+  const serveStaticAssets = () => {
+    const candidatePaths = [
+      path.join(process.cwd(), 'dist'),
+      typeof __dirname !== 'undefined' ? __dirname : '',
+      typeof __dirname !== 'undefined' ? path.join(__dirname, '..', 'dist') : '',
+      process.cwd(),
+    ].filter(Boolean);
+
+    const distPath = candidatePaths.find((p) => fs.existsSync(path.join(p, 'index.html'))) || path.join(process.cwd(), 'dist');
+
+    if (fs.existsSync(path.join(distPath, 'index.html'))) {
+      console.log(`📦 Serving production static assets from: ${distPath}`);
+      // Cache fingerprinted assets, but never cache index.html
+      if (fs.existsSync(path.join(distPath, 'assets'))) {
+        app.use('/assets', express.static(path.join(distPath, 'assets'), {
+          maxAge: '7d',
+          immutable: true,
+        }));
+      }
+      app.use(express.static(distPath, {
+        maxAge: '1h',
+        index: false,
+      }));
+      app.get('*', (req, res, next) => {
+        const indexPath = path.join(distPath, 'index.html');
+        if (fs.existsSync(indexPath)) {
+          res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+          res.setHeader('Pragma', 'no-cache');
+          res.setHeader('Expires', '0');
+          res.sendFile(indexPath, (err) => {
+            if (err && !res.headersSent) {
+              next(err);
+            }
+          });
+        } else {
+          res.status(404).send('Application build not found.');
+        }
+      });
+    } else {
+      console.warn('⚠️ dist/index.html not found in candidate paths:', candidatePaths);
+      app.get('*', (req, res) => {
+        const rootIndex = path.join(process.cwd(), 'index.html');
+        if (fs.existsSync(rootIndex)) {
+          return res.sendFile(rootIndex);
+        }
+        res.status(200).send('<!DOCTYPE html><html><head><title>AutoLamp Cennik</title></head><body><div id="root">Aplikacja uruchamia się... Proszę odświeżyć za chwilę.</div></body></html>');
+      });
+    }
+  };
+
+  if (!isProduction) {
+    try {
+      const { createServer: createViteServer } = await import('vite');
+      const vite = await createViteServer({
+        server: { middlewareMode: true },
+        appType: 'spa',
+      });
+      app.use(vite.middlewares);
+    } catch (viteErr) {
+      console.warn('Vite dev middleware could not be initialized, falling back to static build assets:', viteErr);
+      serveStaticAssets();
+    }
+  } else {
+    serveStaticAssets();
+  }
+
+  // Central Express error handling middleware
+  app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+    console.error('[Express Error Handler]:', err);
+    if (res.headersSent) {
+      return next(err);
+    }
+    res.status(500).json({ success: false, error: err?.message || 'Wewnętrzny błąd serwera' });
+  });
+
+  // Port 3000 is hardcoded by infrastructure and accessed via internal nginx reverse proxy
+  const PORT = 3000;
+  const server = app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Server running on http://0.0.0.0:${PORT} (production: ${process.env.NODE_ENV === 'production'})`);
+  });
+
+  server.on('error', (err: any) => {
+    console.error('[Server Listen Error]:', err);
+  });
+
+  // Graceful shutdown handling for Cloud Run container lifecycle
+  process.on('SIGTERM', () => {
+    console.log('SIGTERM signal received: closing HTTP server');
+    server.close(() => {
+      console.log('HTTP server closed gracefully');
+      process.exit(0);
+    });
+  });
+
+  process.on('SIGINT', () => {
+    console.log('SIGINT signal received: closing HTTP server');
+    server.close(() => {
+      process.exit(0);
+    });
+  });
+}
+
+process.on('uncaughtException', (err) => {
+  console.error('[Uncaught Exception]:', err);
+});
+
+process.on('unhandledRejection', (reason) => {
+  console.error('[Unhandled Rejection]:', reason);
+});
+
+startServer().catch((err) => {
+  console.error('Fatal server startup error:', err);
+  process.exit(1);
+});

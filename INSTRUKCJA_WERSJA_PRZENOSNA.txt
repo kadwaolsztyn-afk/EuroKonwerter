@@ -1,0 +1,31 @@
+================================================================================
+  CENNIK KONWERSJI LAMP I MULTIMEDIÓW - WERSJA W 100% PRZENOŚNA (PORTABLE)
+================================================================================
+
+1. CZYM JEST TA WERSJA?
+-----------------------
+Ta wersja programu została zaprojektowana w taki sposób, aby:
+- Wszystkie pliki znajdowały się WYŁĄCZNIE w tym jednym folderze.
+- W systemie Windows nie tworzyły się żadne ukryte pliki (brak wpisów w AppData, brak wpisów w Rejestrze Windows).
+- Cały folder można skopiować na pendrive, dysk zewnętrzny lub inny komputer i uruchamiać bez instalacji.
+
+2. STRUKTURA PLIKÓW W TYM FOLDERZE:
+-----------------------------------
+- Uruchom_Cennik.bat    -> Kliknij dwukrotnie ten plik, aby uruchomić program.
+- data-catalog.json     -> Twoja pełna baza danych (modele, ceny klienta i pośrednika, roczniki, kody, opisy).
+- pricing-settings.json -> Twoje ustawienia marż, narzutów i rabatów.
+- uploads/              -> Wszystkie dodane zdjęcia lamp i samochodów są fizycznie zapisywane w tym folderze!
+- dist/                 -> Skompilowany, zoptymalizowany silnik aplikacji.
+
+3. JAK DODAWAĆ ZDJĘCIA?
+-----------------------
+W programie wystarczy kliknąć "Wgraj zdjęcie z dysku" przy dowolnym modelu.
+Zdjęcie zostanie automatycznie skopiowane i zapisane do podfolderu "uploads/" w folderze programu.
+Możesz w każdej chwili przejrzeć ten folder w Eksploratorze Windows, dodać tam pliki lub skopiować zdjęcia.
+
+4. JAK PRZENIEŚĆ PROGRAM NA INNY KOMPUTER LUB PENDRIVE?
+-------------------------------------------------------
+Po prostu skopiuj CAŁY ten folder (np. na pendrive E:\Cennik).
+Na nowym komputerze kliknij "Uruchom_Cennik.bat".
+Wszystkie Twoje ceny, dodane modele i zdjęcia będą natychmiast dostępne!
+================================================================================
